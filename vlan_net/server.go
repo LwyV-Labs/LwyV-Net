@@ -226,34 +226,18 @@ func initServerGateway() error {
 }
 
 func tunToClients(dev tun.Device) {
-	batchSize := dev.BatchSize()
-	if batchSize < 1 {
-		batchSize = 1
-	}
+	reader := newTunPacketReader(dev, Conf.Common.MTU)
 
-	bufs := make([][]byte, batchSize)
-	sizes := make([]int, batchSize)
-	for i := range bufs {
-		bufs[i] = make([]byte, Conf.Common.MTU)
-	}
-
-	log.Printf("▶ 启动：Server TUN -> Client (batch=%d)", batchSize)
+	log.Printf("▶ 启动：Server TUN -> Client (batch=%d)", reader.BatchSize())
 
 	for {
-		n, err := dev.Read(bufs, sizes, 0)
+		packets, err := reader.ReadPackets()
 		if err != nil {
 			log.Printf("服务端TUN读取失败: %v", err)
 			return
 		}
 
-		for i := 0; i < n; i++ {
-			if sizes[i] <= 0 || sizes[i] > len(bufs[i]) {
-				continue
-			}
-
-			pkt := make([]byte, sizes[i])
-			copy(pkt, bufs[i][:sizes[i]])
-
+		for _, pkt := range packets {
 			heardInfo, err := headerParsing(pkt)
 			if err != nil {
 				log.Printf("服务端TUN回包解析失败: %v, len=%d", err, len(pkt))
