@@ -8,6 +8,7 @@ import (
 	"time"
 
 	kcp "github.com/xtaci/kcp-go/v5"
+	"golang.zx2c4.com/wireguard/tun"
 )
 
 type ClientPeer struct {
@@ -22,7 +23,16 @@ type KcpClient struct {
 // 客户端路由表：key=虚拟IP，value=客户端连接对象
 var clientKcpTable = &KcpClient{m: make(map[string]*ClientPeer)}
 
+var (
+	serverTunDev tun.Device
+	serverTunMu  sync.Mutex
+)
+
 func StartServer() {
+	if err := initServerGateway(); err != nil {
+		log.Fatalf("初始化服务端网关失败: %v", err)
+	}
+
 	if Conf.Common.Mode == "TCP" {
 		startTCPServer()
 	} else if Conf.Common.Mode == "KCP" {
@@ -151,6 +161,18 @@ func handleClient(conn net.Conn) {
 		clientKcpTable.RUnlock()
 
 		if !exists {
+			if serverTunDev != nil {
+				serverTunMu.Lock()
+				bufs := [][]byte{pkt}
+				_, err = serverTunDev.Write(bufs, 0)
+				serverTunMu.Unlock()
+				if err != nil {
+					log.Printf("⚠️ 外网转发失败(写入服务端TUN): %v", err)
+					continue
+				}
+				log.Printf("🌍 外网转发: %s -> %s", heardInfo.SrcIP, heardInfo.DstIP)
+				continue
+			}
 			log.Printf("⚠️ 目标不存在: %s (未注册客户端)", heardInfo.DstIP)
 			continue
 		}
@@ -165,5 +187,83 @@ func handleClient(conn net.Conn) {
 		}
 
 		log.Printf("✅ 成功转发至: %s", heardInfo.DstIP)
+	}
+}
+
+func initServerGateway() error {
+	if !Conf.Common.Proxy {
+		return nil
+	}
+
+	ifName := Conf.Server.IfName
+	if ifName == "" {
+		ifName = "LwyV-Gateway"
+	}
+
+	mask := Conf.Server.SubnetMask
+	if mask == "" {
+		mask = Conf.Client.SubnetMask
+	}
+
+	dev, err := createTun(ifName, Conf.Common.MTU)
+	if err != nil {
+		return fmt.Errorf("创建服务端TUN失败: %w", err)
+	}
+
+	if err = configureTunAddress(ifName, Conf.Common.Gateway, mask); err != nil {
+		_ = dev.Close()
+		return fmt.Errorf("配置服务端TUN地址失败: %w", err)
+	}
+
+	if err = enableServerGatewayNAT(ifName, Conf.Common.Gateway, mask, Conf.Server.EgressIf); err != nil {
+		_ = dev.Close()
+		return fmt.Errorf("配置服务端NAT失败: %w", err)
+	}
+
+	serverTunDev = dev
+	go tunToClients(dev)
+	log.Printf("✅ 服务端网关已启用: if=%s gw=%s/%s", ifName, Conf.Common.Gateway, mask)
+	return nil
+}
+
+func tunToClients(dev tun.Device) {
+	bufs := make([][]byte, 1)
+	sizes := make([]int, 1)
+	bufs[0] = make([]byte, Conf.Common.MTU)
+
+	log.Printf("▶ 启动：Server TUN -> Client")
+	for {
+		n, err := dev.Read(bufs, sizes, 0)
+		if err != nil {
+			log.Printf("服务端TUN读取失败: %v", err)
+			return
+		}
+		if n <= 0 || sizes[0] <= 0 || sizes[0] > len(bufs[0]) {
+			continue
+		}
+
+		pkt := make([]byte, sizes[0])
+		copy(pkt, bufs[0][:sizes[0]])
+
+		heardInfo, err := headerParsing(pkt)
+		if err != nil {
+			continue
+		}
+
+		clientKcpTable.RLock()
+		targetPeer, exists := clientKcpTable.m[heardInfo.DstIP]
+		clientKcpTable.RUnlock()
+		if !exists {
+			continue
+		}
+
+		targetPeer.mu.Lock()
+		err = writePacket(targetPeer.conn, pkt)
+		targetPeer.mu.Unlock()
+		if err != nil {
+			log.Printf("服务端TUN回包转发失败 [%s]: %v", heardInfo.DstIP, err)
+			continue
+		}
+		log.Printf("✅ 外网回包已转发至: %s", heardInfo.DstIP)
 	}
 }
