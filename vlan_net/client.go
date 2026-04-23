@@ -118,12 +118,11 @@ func startKCPClient(dev tun.Device) {
 
 // tunToPacketQueue TUN -> packet queue
 func tunToPacketQueue(dev tun.Device) {
-	reader := newTunPacketReader(dev, Conf.Common.MTU)
 
-	log.Printf("▶ 启动：TUN → Queue (batch=%d)", reader.BatchSize())
+	log.Printf("▶ 启动：TUN → Queue")
 
 	for {
-		packets, err := reader.ReadPackets()
+		packets, err := readFromTun(dev, Conf.Common.MTU)
 		if err != nil {
 			log.Printf("TUN读取失败: %v", err)
 			return

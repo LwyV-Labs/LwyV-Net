@@ -226,12 +226,11 @@ func initServerGateway() error {
 }
 
 func tunToClients(dev tun.Device) {
-	reader := newTunPacketReader(dev, Conf.Common.MTU)
 
-	log.Printf("▶ 启动：Server TUN -> Client (batch=%d)", reader.BatchSize())
+	log.Printf("▶ 启动：Server TUN -> Client")
 
 	for {
-		packets, err := reader.ReadPackets()
+		packets, err := readFromTun(dev, Conf.Common.MTU)
 		if err != nil {
 			log.Printf("服务端TUN读取失败: %v", err)
 			return

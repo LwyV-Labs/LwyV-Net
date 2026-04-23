@@ -2,7 +2,7 @@
 common:
   password: "183178053"
   mtu: 1300
-  mode: "tcp"
+  mode: "kcp"
   proxy: true
   gateway: "172.19.0.254"
 

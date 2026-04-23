@@ -11,6 +11,8 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
+//=========================== IP 报文解析 ===========================
+
 type IPHeaderInfo struct {
 	SrcIP       string
 	DstIP       string
@@ -107,6 +109,8 @@ func broadcastPacket(heardInfo *IPHeaderInfo, pkt []byte) {
 	}
 }
 
+//=========================== TCP，KCP 配置与读写 ===========================
+
 // setupKCPSession设置KCP
 func setupKCPSession(conn *kcp.UDPSession) {
 	conn.SetWriteDelay(false)
@@ -153,6 +157,8 @@ func writePacket(conn net.Conn, pkt []byte) error {
 	return nil
 }
 
+//=========================== TUN 读写 ===========================
+
 // writeToTun 写网卡
 func writeToTun(dev tun.Device, pkt []byte) error {
 	buf := make([]byte, tunWriteOffset+len(pkt))
@@ -162,13 +168,7 @@ func writeToTun(dev tun.Device, pkt []byte) error {
 	return err
 }
 
-type tunPacketReader struct {
-	dev   tun.Device
-	bufs  [][]byte
-	sizes []int
-}
-
-func newTunPacketReader(dev tun.Device, mtu int) *tunPacketReader {
+func readFromTun(dev tun.Device, mtu int) ([][]byte, error) {
 	batchSize := dev.BatchSize()
 	if batchSize < 1 {
 		batchSize = 1
@@ -180,31 +180,19 @@ func newTunPacketReader(dev tun.Device, mtu int) *tunPacketReader {
 		bufs[i] = make([]byte, mtu)
 	}
 
-	return &tunPacketReader{
-		dev:   dev,
-		bufs:  bufs,
-		sizes: sizes,
-	}
-}
-
-func (r *tunPacketReader) BatchSize() int {
-	return len(r.bufs)
-}
-
-func (r *tunPacketReader) ReadPackets() ([][]byte, error) {
-	n, err := r.dev.Read(r.bufs, r.sizes, 0)
+	n, err := dev.Read(bufs, sizes, 0)
 	if err != nil {
 		return nil, err
 	}
 
 	packets := make([][]byte, 0, n)
 	for i := 0; i < n; i++ {
-		if r.sizes[i] <= 0 || r.sizes[i] > len(r.bufs[i]) {
+		if sizes[i] <= 0 || sizes[i] > len(bufs[i]) {
 			continue
 		}
 
-		pkt := make([]byte, r.sizes[i])
-		copy(pkt, r.bufs[i][:r.sizes[i]])
+		pkt := make([]byte, sizes[i])
+		copy(pkt, bufs[i][:sizes[i]])
 		packets = append(packets, pkt)
 	}
 
