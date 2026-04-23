@@ -28,7 +28,10 @@ type CommonConfig struct {
 
 // ServerConfig 服务端配置
 type ServerConfig struct {
-	Port int `yaml:"port"`
+	Port       int    `yaml:"port"`
+	IfName     string `yaml:"ifName"`
+	SubnetMask string `yaml:"subnetMask"`
+	EgressIf   string `yaml:"egressIf"`
 }
 
 // ClientConfig 客户端配置
