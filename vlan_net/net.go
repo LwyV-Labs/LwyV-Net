@@ -65,6 +65,55 @@ func writeToTun(dev tun.Device, pkt []byte) error {
 	return err
 }
 
+type tunPacketReader struct {
+	dev   tun.Device
+	bufs  [][]byte
+	sizes []int
+}
+
+func newTunPacketReader(dev tun.Device, mtu int) *tunPacketReader {
+	batchSize := dev.BatchSize()
+	if batchSize < 1 {
+		batchSize = 1
+	}
+
+	bufs := make([][]byte, batchSize)
+	sizes := make([]int, batchSize)
+	for i := range bufs {
+		bufs[i] = make([]byte, mtu)
+	}
+
+	return &tunPacketReader{
+		dev:   dev,
+		bufs:  bufs,
+		sizes: sizes,
+	}
+}
+
+func (r *tunPacketReader) BatchSize() int {
+	return len(r.bufs)
+}
+
+func (r *tunPacketReader) ReadPackets() ([][]byte, error) {
+	n, err := r.dev.Read(r.bufs, r.sizes, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	packets := make([][]byte, 0, n)
+	for i := 0; i < n; i++ {
+		if r.sizes[i] <= 0 || r.sizes[i] > len(r.bufs[i]) {
+			continue
+		}
+
+		pkt := make([]byte, r.sizes[i])
+		copy(pkt, r.bufs[i][:r.sizes[i]])
+		packets = append(packets, pkt)
+	}
+
+	return packets, nil
+}
+
 // 广播数据
 func broadcastPacket(heardInfo *IPHeaderInfo, pkt []byte) {
 	var targets = make(map[string]*ClientPeer)

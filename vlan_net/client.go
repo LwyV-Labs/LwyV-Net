@@ -118,34 +118,18 @@ func startKCPClient(dev tun.Device) {
 
 // tunToPacketQueue TUN -> packet queue
 func tunToPacketQueue(dev tun.Device) {
-	batchSize := dev.BatchSize()
-	if batchSize < 1 {
-		batchSize = 1
-	}
+	reader := newTunPacketReader(dev, Conf.Common.MTU)
 
-	bufs := make([][]byte, batchSize)
-	sizes := make([]int, batchSize)
-	for i := range bufs {
-		bufs[i] = make([]byte, Conf.Common.MTU)
-	}
-
-	log.Printf("▶ 启动：TUN → Queue (batch=%d)", batchSize)
+	log.Printf("▶ 启动：TUN → Queue (batch=%d)", reader.BatchSize())
 
 	for {
-		n, err := dev.Read(bufs, sizes, 0)
+		packets, err := reader.ReadPackets()
 		if err != nil {
 			log.Printf("TUN读取失败: %v", err)
 			return
 		}
 
-		for i := 0; i < n; i++ {
-			if sizes[i] <= 0 || sizes[i] > len(bufs[i]) {
-				continue
-			}
-
-			pkt := make([]byte, sizes[i])
-			copy(pkt, bufs[i][:sizes[i]])
-
+		for _, pkt := range packets {
 			select {
 			case tunPacketChan <- pkt:
 			default:
