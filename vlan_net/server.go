@@ -163,8 +163,7 @@ func handleClient(conn net.Conn) {
 		if !exists {
 			if serverTunDev != nil {
 				serverTunMu.Lock()
-				bufs := [][]byte{pkt}
-				_, err = serverTunDev.Write(bufs, 0)
+				err = writeToTun(serverTunDev, pkt)
 				serverTunMu.Unlock()
 				if err != nil {
 					log.Printf("⚠️ 外网转发失败(写入服务端TUN): %v", err)
@@ -227,43 +226,60 @@ func initServerGateway() error {
 }
 
 func tunToClients(dev tun.Device) {
-	bufs := make([][]byte, 1)
-	sizes := make([]int, 1)
-	bufs[0] = make([]byte, Conf.Common.MTU)
+	batchSize := dev.BatchSize()
+	if batchSize < 1 {
+		batchSize = 1
+	}
 
-	log.Printf("▶ 启动：Server TUN -> Client")
+	bufs := make([][]byte, batchSize)
+	sizes := make([]int, batchSize)
+	for i := range bufs {
+		bufs[i] = make([]byte, Conf.Common.MTU)
+	}
+
+	log.Printf("▶ 启动：Server TUN -> Client (batch=%d)", batchSize)
+
 	for {
 		n, err := dev.Read(bufs, sizes, 0)
 		if err != nil {
 			log.Printf("服务端TUN读取失败: %v", err)
 			return
 		}
-		if n <= 0 || sizes[0] <= 0 || sizes[0] > len(bufs[0]) {
-			continue
-		}
 
-		pkt := make([]byte, sizes[0])
-		copy(pkt, bufs[0][:sizes[0]])
+		for i := 0; i < n; i++ {
+			if sizes[i] <= 0 || sizes[i] > len(bufs[i]) {
+				continue
+			}
 
-		heardInfo, err := headerParsing(pkt)
-		if err != nil {
-			continue
-		}
+			pkt := make([]byte, sizes[i])
+			copy(pkt, bufs[i][:sizes[i]])
 
-		clientKcpTable.RLock()
-		targetPeer, exists := clientKcpTable.m[heardInfo.DstIP]
-		clientKcpTable.RUnlock()
-		if !exists {
-			continue
-		}
+			heardInfo, err := headerParsing(pkt)
+			if err != nil {
+				log.Printf("服务端TUN回包解析失败: %v, len=%d", err, len(pkt))
+				continue
+			}
 
-		targetPeer.mu.Lock()
-		err = writePacket(targetPeer.conn, pkt)
-		targetPeer.mu.Unlock()
-		if err != nil {
-			log.Printf("服务端TUN回包转发失败 [%s]: %v", heardInfo.DstIP, err)
-			continue
+			log.Printf("📤 服务端TUN回包 | 类型:%s | 来源:%s | 目标:%s | 大小:%d",
+				heardInfo.ProtoName, heardInfo.SrcIP, heardInfo.DstIP, len(pkt))
+
+			clientKcpTable.RLock()
+			targetPeer, exists := clientKcpTable.m[heardInfo.DstIP]
+			clientKcpTable.RUnlock()
+			if !exists {
+				log.Printf("⚠️ 回包目标未注册: %s", heardInfo.DstIP)
+				continue
+			}
+
+			targetPeer.mu.Lock()
+			err = writePacket(targetPeer.conn, pkt)
+			targetPeer.mu.Unlock()
+			if err != nil {
+				log.Printf("服务端TUN回包转发失败 [%s]: %v", heardInfo.DstIP, err)
+				continue
+			}
+
+			log.Printf("✅ 外网回包已转发至: %s", heardInfo.DstIP)
 		}
-		log.Printf("✅ 外网回包已转发至: %s", heardInfo.DstIP)
 	}
 }

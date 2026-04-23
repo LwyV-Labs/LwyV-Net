@@ -43,7 +43,7 @@ Go 写入 TUN
 ##
 chmod +x vlan.bin
 ### 启动运行
-./vlan server
+sudo ./vlan.bin server
 ./vlan 
 
 
@@ -56,11 +56,11 @@ go build -o build/vlan.exe
 
 $env:CGO_ENABLED=0; $env:GOOS="linux"; $env:GOARCH="amd64"; go build -o build/vlan.bin
 
-nohup ./vlan.bin server &>/dev/null &
+sudo nohup ./vlan.bin server &>/dev/null &
 
-nohup ./vlan.bin server > server.log 2>&1 &
+sudo nohup ./vlan.bin server > server.log 2>&1 &
 
-while true; do ./vlan server; sleep 1; done
+sudo while true; do ./vlan server; sleep 1; done
 
 ps -ef | grep vlan.bin
 

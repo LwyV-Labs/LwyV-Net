@@ -55,7 +55,7 @@ func isBroadcastIP(ip []byte) bool {
 	if ip[0] == 0xff && ip[1] == 0xff && ip[2] == 0xff && ip[3] == 0xff {
 		return true
 	}
-	if ip[0] == 10 && ip[1] == 0 && ip[2] == 0 && ip[3] == 255 {
+	if ip[0] == 172 && ip[1] == 19 && ip[2] == 0 && ip[3] == 255 {
 		return true
 	}
 	if ip[0] >= 224 && ip[0] <= 239 {

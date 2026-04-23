@@ -8,6 +8,7 @@ import (
 	"net"
 
 	"github.com/xtaci/kcp-go/v5"
+	"golang.zx2c4.com/wireguard/tun"
 )
 
 func setupKCPSession(conn *kcp.UDPSession) {
@@ -53,6 +54,15 @@ func writePacket(conn net.Conn, pkt []byte) error {
 		buf = buf[n:]
 	}
 	return nil
+}
+
+// writeToTun 写网卡
+func writeToTun(dev tun.Device, pkt []byte) error {
+	buf := make([]byte, tunWriteOffset+len(pkt))
+	copy(buf[tunWriteOffset:], pkt)
+
+	_, err := dev.Write([][]byte{buf}, tunWriteOffset)
+	return err
 }
 
 // 广播数据

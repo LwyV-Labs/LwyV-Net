@@ -3,8 +3,8 @@ common:
   password: "183178053"
   mtu: 1300
   mode: "tcp"
-  proxy: false
-  gateway: "10.0.0.254"
+  proxy: true
+  gateway: "172.19.0.254"
 
 # 服务端配置
 server:
@@ -17,5 +17,5 @@ server:
 client:
   ifName: "LwyV-NetAdapter"
   serverIP: "111.229.84.165:9999"
-  localIP: "10.0.0.1"
+  localIP: "172.19.0.1"
   subnetMask : "255.255.255.0"

@@ -36,9 +36,15 @@ func StartClient() {
 	defer cleanupTunTraffic()
 
 	if Conf.Common.Proxy {
-		if err := addDefaultRoute(Conf.Client.IfName, Conf.Common.Gateway); err != nil {
-			log.Printf("默认路由添加失败: %v", err)
+		cleanupRoute, err := setupClientProxyRouting(
+			Conf.Client.ServerIP,
+			Conf.Client.IfName,
+			Conf.Common.Gateway,
+		)
+		if err != nil {
+			log.Fatalf("客户端代理路由初始化失败: %v", err)
 		}
+		defer cleanupRoute()
 	}
 
 	go tunToPacketQueue(dev)
@@ -112,35 +118,39 @@ func startKCPClient(dev tun.Device) {
 
 // tunToPacketQueue TUN -> packet queue
 func tunToPacketQueue(dev tun.Device) {
-	// 官方 Read 要求：必须是 [][]byte + []int
-	bufs := make([][]byte, 1)               // 一次读1个包
-	sizes := make([]int, 1)                 // 存储每个包的长度
-	bufs[0] = make([]byte, Conf.Common.MTU) // 包缓冲区
+	batchSize := dev.BatchSize()
+	if batchSize < 1 {
+		batchSize = 1
+	}
 
-	log.Printf("▶ 启动：TUN → Queue")
+	bufs := make([][]byte, batchSize)
+	sizes := make([]int, batchSize)
+	for i := range bufs {
+		bufs[i] = make([]byte, Conf.Common.MTU)
+	}
+
+	log.Printf("▶ 启动：TUN → Queue (batch=%d)", batchSize)
+
 	for {
-		// 读取TUN设备数据
 		n, err := dev.Read(bufs, sizes, 0)
 		if err != nil {
 			log.Printf("TUN读取失败: %v", err)
 			return
 		}
-		if n <= 0 {
-			continue
-		}
-		if sizes[0] <= 0 || sizes[0] > len(bufs[0]) {
-			continue
-		}
 
-		// 必须复制一份，因为 bufs[0] 会在下一次 dev.Read 时复用。
-		pkt := make([]byte, sizes[0])
-		copy(pkt, bufs[0][:sizes[0]])
+		for i := 0; i < n; i++ {
+			if sizes[i] <= 0 || sizes[i] > len(bufs[i]) {
+				continue
+			}
 
-		// 队列满时丢包，避免断线或慢连接时把TUN读取goroutine永久堵住。
-		select {
-		case tunPacketChan <- pkt:
-		default:
-			log.Printf("TUN发送队列已满，丢弃IP包: %d bytes", len(pkt))
+			pkt := make([]byte, sizes[i])
+			copy(pkt, bufs[i][:sizes[i]])
+
+			select {
+			case tunPacketChan <- pkt:
+			default:
+				log.Printf("TUN发送队列已满，丢弃IP包: %d bytes", len(pkt))
+			}
 		}
 	}
 }
@@ -190,8 +200,7 @@ func connToTun(dev tun.Device, conn net.Conn) {
 			continue
 		}
 		// 写入TUN设备数据
-		bufs := [][]byte{pkt}
-		_, err = dev.Write(bufs, 0)
+		err = writeToTun(dev, pkt)
 		if err != nil {
 			log.Printf("TUN写入失败: %v", err)
 			return
