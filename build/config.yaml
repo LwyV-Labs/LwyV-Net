@@ -1,0 +1,18 @@
+# 通用配置
+common:
+  password: "183178053"
+  mtu: 1300
+  mode: "tcp"
+  proxy: false
+  gateway: "10.0.0.254"
+
+# 服务端配置
+server:
+  port: 9999
+
+# 客户端连接配置
+client:
+  ifName: "LwyV-NetAdapter"
+  serverIP: "111.229.84.165:9999"
+  localIP: "10.0.0.1"
+  subnetMask : "255.255.255.0"
