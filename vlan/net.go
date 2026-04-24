@@ -63,13 +63,25 @@ func isBroadcastIP(ip []byte) bool {
 	if ip[0] == 0xff && ip[1] == 0xff && ip[2] == 0xff && ip[3] == 0xff {
 		return true
 	}
-	if ip[0] == 172 && ip[1] == 19 && ip[2] == 0 && ip[3] == 255 {
+	if isSubnetBroadcast(ip, Conf.Common.Gateway, Conf.Common.SubnetMask) {
 		return true
 	}
 	if ip[0] >= 224 && ip[0] <= 239 {
 		return true
 	}
 	return false
+}
+
+func isSubnetBroadcast(dst []byte, gateway, mask string) bool {
+	gw := net.ParseIP(gateway).To4()
+	m := net.ParseIP(mask).To4()
+	if gw == nil || m == nil || len(dst) != 4 {
+		return false
+	}
+
+	network := []byte{gw[0] & m[0], gw[1] & m[1], gw[2] & m[2], gw[3] & m[3]}
+	broadcast := []byte{network[0] | ^m[0], network[1] | ^m[1], network[2] | ^m[2], network[3] | ^m[3]}
+	return dst[0] == broadcast[0] && dst[1] == broadcast[1] && dst[2] == broadcast[2] && dst[3] == broadcast[3]
 }
 
 // 解析IP包类型
