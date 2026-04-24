@@ -8,7 +8,7 @@ import (
 )
 
 func enableServerGatewayNAT(ifName, gatewayIP, mask, egressIf string) error {
-	prefix, err := maskToPrefixValue(mask)
+	prefix, err := maskToPrefix(mask)
 	if err != nil {
 		return err
 	}
@@ -69,16 +69,4 @@ func networkAddr(ip, mask string) string {
 		return ip
 	}
 	return net.IPv4(ipv4[0]&maskIP[0], ipv4[1]&maskIP[1], ipv4[2]&maskIP[2], ipv4[3]&maskIP[3]).String()
-}
-
-func maskToPrefixValue(mask string) (int, error) {
-	ip := net.ParseIP(mask).To4()
-	if ip == nil {
-		return 0, fmt.Errorf("非法子网掩码: %s", mask)
-	}
-	ones, bits := net.IPMask(ip).Size()
-	if bits != 32 {
-		return 0, fmt.Errorf("非法子网掩码: %s", mask)
-	}
-	return ones, nil
 }

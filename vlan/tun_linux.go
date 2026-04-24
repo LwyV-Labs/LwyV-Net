@@ -4,7 +4,6 @@ package vlan
 
 import (
 	"fmt"
-	"net"
 	"os/exec"
 	"strings"
 
@@ -107,16 +106,4 @@ func deleteDefaultRoute(ifName, gateway string) error {
 		"via", gateway,
 		"dev", ifName,
 	).Run()
-}
-
-func maskToPrefix(mask string) (int, error) {
-	ip := net.ParseIP(mask).To4()
-	if ip == nil {
-		return 0, fmt.Errorf("非法子网掩码: %s", mask)
-	}
-	ones, bits := net.IPMask(ip).Size()
-	if bits != 32 {
-		return 0, fmt.Errorf("非法子网掩码: %s", mask)
-	}
-	return ones, nil
 }

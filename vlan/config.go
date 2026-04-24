@@ -3,6 +3,7 @@ package vlan
 import (
 	"crypto/sha256"
 	"log"
+	"net"
 	"os"
 	"strings"
 
@@ -68,10 +69,20 @@ func InitConfig(path string) {
 func validateConfig() {
 	Conf.Common.Key = get32Key(Conf.Common.Password)
 
-	if Conf.Common.MTU <= 0 || Conf.Common.MTU > 9000 {
-		log.Fatalf("MTU 配置异常: %d", Conf.Common.MTU)
+	if Conf.Server.Port <= 0 || Conf.Server.Port > 65535 {
+		log.Fatalf("非法服务端端口: %d", Conf.Server.Port)
 	}
-
+	// 检查客户端ServerIP
+	if Conf.Client.ServerIP == "" {
+		log.Fatalf("客户端ServerIP不能为空")
+	}
+	// 检查网关和子网掩码
+	if net.ParseIP(Conf.Common.Gateway) == nil {
+		log.Fatalf("非法网关地址: %s", Conf.Common.Gateway)
+	}
+	if _, err := maskToPrefix(Conf.Common.SubnetMask); err != nil {
+		log.Fatalf("非法子网掩码: %s, 错误: %v", Conf.Common.SubnetMask, err)
+	}
 	Conf.Common.Mode = strings.ToUpper(Conf.Common.Mode)
 }
 
