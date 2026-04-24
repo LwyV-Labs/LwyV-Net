@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"sync"
 	"time"
 
 	"NetworkSetup/vdhcp"
@@ -21,6 +20,8 @@ const (
 
 var (
 	tunPacketChan = make(chan []byte, tunPacketQueueSize)
+	routeInited   bool
+	cleanupRoute  func()
 )
 
 func StartClient() {
@@ -37,8 +38,6 @@ func StartClient() {
 
 	go tunToPacketQueue(dev)
 
-	var routeOnce sync.Once
-	var cleanupRoute func()
 	defer func() {
 		if cleanupRoute != nil {
 			cleanupRoute()
@@ -46,15 +45,15 @@ func StartClient() {
 	}()
 
 	if Conf.Common.Mode == "TCP" {
-		startTCPClient(dev, &routeOnce, &cleanupRoute)
+		startTCPClient(dev, &cleanupRoute)
 	} else if Conf.Common.Mode == "KCP" {
-		startKCPClient(dev, &routeOnce, &cleanupRoute)
+		startKCPClient(dev, &cleanupRoute)
 	} else {
 		log.Fatalf("不支持类型: %s", Conf.Common.Mode)
 	}
 }
 
-func startTCPClient(dev tun.Device, routeOnce *sync.Once, cleanupRoute *func()) {
+func startTCPClient(dev tun.Device, cleanupRoute *func()) {
 	for {
 		conn, err := net.DialTimeout("tcp", Conf.Client.ServerIP, 5*time.Second)
 		if err != nil {
@@ -64,7 +63,7 @@ func startTCPClient(dev tun.Device, routeOnce *sync.Once, cleanupRoute *func()) 
 		}
 		log.Printf("✅ 已连接服务端: %s", Conf.Client.ServerIP)
 
-		if err = initClientAddress(conn, routeOnce, cleanupRoute); err != nil {
+		if err = initClientAddress(conn, cleanupRoute); err != nil {
 			log.Printf("客户端地址初始化失败: %v", err)
 			_ = conn.Close()
 			time.Sleep(1 * time.Second)
@@ -86,7 +85,7 @@ func startTCPClient(dev tun.Device, routeOnce *sync.Once, cleanupRoute *func()) 
 	}
 }
 
-func startKCPClient(dev tun.Device, routeOnce *sync.Once, cleanupRoute *func()) {
+func startKCPClient(dev tun.Device, cleanupRoute *func()) {
 
 	block, err := kcp.NewAESGCMCrypt(Conf.Common.Key)
 	if err != nil {
@@ -104,7 +103,7 @@ func startKCPClient(dev tun.Device, routeOnce *sync.Once, cleanupRoute *func()) 
 
 		log.Printf("✅ 已连接KCP服务端: %s", Conf.Client.ServerIP)
 
-		if err = initClientAddress(conn, routeOnce, cleanupRoute); err != nil {
+		if err = initClientAddress(conn, cleanupRoute); err != nil {
 			log.Printf("客户端地址初始化失败: %v", err)
 			_ = conn.Close()
 			time.Sleep(1 * time.Second)
@@ -126,7 +125,7 @@ func startKCPClient(dev tun.Device, routeOnce *sync.Once, cleanupRoute *func()) 
 	}
 }
 
-func initClientAddress(conn net.Conn, routeOnce *sync.Once, cleanupRoute *func()) error {
+func initClientAddress(conn net.Conn, cleanupRoute *func()) error {
 
 	dhcpIP, dhcpMask, err := requestVDHCP(conn)
 	if err != nil {
@@ -141,21 +140,18 @@ func initClientAddress(conn net.Conn, routeOnce *sync.Once, cleanupRoute *func()
 	log.Printf("✅ 客户端地址已配置: %s/%s", ip, mask)
 
 	if Conf.Common.Proxy {
-		var routeErr error
-		routeOnce.Do(func() {
+		if !routeInited { // 仅未初始化时执行
 			cleanup, err := setupClientProxyRouting(
 				Conf.Client.ServerIP,
 				Conf.Client.IfName,
 				Conf.Common.Gateway,
 			)
 			if err != nil {
-				routeErr = err
-				return
+				return fmt.Errorf("客户端代理路由初始化失败: %w", err)
 			}
 			*cleanupRoute = cleanup
-		})
-		if routeErr != nil {
-			return fmt.Errorf("客户端代理路由初始化失败: %w", routeErr)
+			routeInited = true // 标记为已初始化
+
 		}
 	}
 
@@ -195,7 +191,7 @@ func requestVDHCP(conn net.Conn) (string, string, error) {
 		return "", "", fmt.Errorf("DHCP OFFER缺少IP或子网掩码")
 	}
 
-	log.Printf("✅ 收到vDHCP地址: %s/%s", msg.IP, msg.SubnetMask)
+	log.Printf("✅ 收到V-DHCP地址: %s/%s", msg.IP, msg.SubnetMask)
 	return msg.IP, msg.SubnetMask, nil
 }
 
