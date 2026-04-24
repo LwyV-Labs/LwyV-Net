@@ -8,16 +8,16 @@ import (
 
 func main() {
 
-	vlan_net.InitConfig("config.yaml")
+	vlan.InitConfig("config.yaml")
 
 	if len(os.Args) < 2 {
-		vlan_net.StartClient()
+		vlan.StartClient()
 		return
 	}
 
 	runType := os.Args[1]
 	if runType == "server" {
-		vlan_net.StartServer()
+		vlan.StartServer()
 	} else {
 		log.Fatal(runType + " is not a valid runType")
 	}

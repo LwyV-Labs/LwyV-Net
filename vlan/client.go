@@ -1,4 +1,4 @@
-package vlan_net
+package vlan
 
 import (
 	"log"

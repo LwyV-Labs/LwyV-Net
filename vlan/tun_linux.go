@@ -1,6 +1,6 @@
 //go:build linux
 
-package vlan_net
+package vlan
 
 import (
 	"fmt"

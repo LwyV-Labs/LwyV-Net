@@ -6,6 +6,9 @@ common:
   proxy: true
   gateway: "172.19.0.254"
 
+# DHCP配置
+
+
 # 服务端配置
 server:
   port: 9999

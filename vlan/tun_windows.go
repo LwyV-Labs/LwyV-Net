@@ -1,6 +1,6 @@
 //go:build windows
 
-package vlan_net
+package vlan
 
 import (
 	"fmt"
