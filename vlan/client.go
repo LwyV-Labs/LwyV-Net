@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"NetworkSetup/vdhcp"
@@ -20,8 +23,6 @@ const (
 
 var (
 	tunPacketChan = make(chan []byte, tunPacketQueueSize)
-	routeInited   bool
-	cleanupRoute  func()
 )
 
 func StartClient() {
@@ -34,26 +35,38 @@ func StartClient() {
 	if err := allowTunTraffic(Conf.Client.IfName); err != nil {
 		log.Printf("放行虚拟网卡流量失败: %v", err)
 	}
+
 	defer cleanupTunTraffic()
+	defer cleanupClientProxyRouting()
+	installClientCleanupSignal()
 
 	go tunToPacketQueue(dev)
 
-	defer func() {
-		if cleanupRoute != nil {
-			cleanupRoute()
-		}
-	}()
-
 	if Conf.Common.Mode == "TCP" {
-		startTCPClient(dev, &cleanupRoute)
+		startTCPClient(dev)
 	} else if Conf.Common.Mode == "KCP" {
-		startKCPClient(dev, &cleanupRoute)
+		startKCPClient(dev)
 	} else {
 		log.Fatalf("不支持类型: %s", Conf.Common.Mode)
 	}
 }
 
-func startTCPClient(dev tun.Device, cleanupRoute *func()) {
+func installClientCleanupSignal() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		<-ch
+		log.Println("收到退出信号，开始清理客户端路由...")
+
+		cleanupClientProxyRouting()
+		cleanupTunTraffic()
+
+		os.Exit(0)
+	}()
+}
+
+func startTCPClient(dev tun.Device) {
 	for {
 		conn, err := net.DialTimeout("tcp", Conf.Client.ServerIP, 5*time.Second)
 		if err != nil {
@@ -63,7 +76,7 @@ func startTCPClient(dev tun.Device, cleanupRoute *func()) {
 		}
 		log.Printf("✅ 已连接服务端: %s", Conf.Client.ServerIP)
 
-		if err = initClientAddress(conn, cleanupRoute); err != nil {
+		if err = initClientAddress(conn); err != nil {
 			log.Printf("客户端地址初始化失败: %v", err)
 			_ = conn.Close()
 			time.Sleep(1 * time.Second)
@@ -81,11 +94,14 @@ func startTCPClient(dev tun.Device, cleanupRoute *func()) {
 		clientSendLoop(conn, tcpDone)
 
 		_ = conn.Close()
+
+		// 每次断线都清理默认路由，避免下次重连时默认路由还指向 TUN
+		cleanupClientProxyRouting()
 		log.Println("连接断开，准备重连...")
 	}
 }
 
-func startKCPClient(dev tun.Device, cleanupRoute *func()) {
+func startKCPClient(dev tun.Device) {
 
 	block, err := kcp.NewAESGCMCrypt(Conf.Common.Key)
 	if err != nil {
@@ -103,7 +119,7 @@ func startKCPClient(dev tun.Device, cleanupRoute *func()) {
 
 		log.Printf("✅ 已连接KCP服务端: %s", Conf.Client.ServerIP)
 
-		if err = initClientAddress(conn, cleanupRoute); err != nil {
+		if err = initClientAddress(conn); err != nil {
 			log.Printf("客户端地址初始化失败: %v", err)
 			_ = conn.Close()
 			time.Sleep(1 * time.Second)
@@ -121,12 +137,14 @@ func startKCPClient(dev tun.Device, cleanupRoute *func()) {
 		clientSendLoop(conn, kcpDone)
 
 		_ = conn.Close()
+
+		// 每次断线都清理默认路由，避免下次重连时默认路由还指向 TUN
+		cleanupClientProxyRouting()
 		log.Println("连接断开，准备重连...")
 	}
 }
 
-func initClientAddress(conn net.Conn, cleanupRoute *func()) error {
-
+func initClientAddress(conn net.Conn) error {
 	dhcpIP, dhcpMask, err := requestVDHCP(conn)
 	if err != nil {
 		return err
@@ -140,18 +158,12 @@ func initClientAddress(conn net.Conn, cleanupRoute *func()) error {
 	log.Printf("✅ 客户端地址已配置: %s/%s", ip, mask)
 
 	if Conf.Common.Proxy {
-		if !routeInited { // 仅未初始化时执行
-			cleanup, err := setupClientProxyRouting(
-				Conf.Client.ServerIP,
-				Conf.Client.IfName,
-				Conf.Common.Gateway,
-			)
-			if err != nil {
-				return fmt.Errorf("客户端代理路由初始化失败: %w", err)
-			}
-			*cleanupRoute = cleanup
-			routeInited = true // 标记为已初始化
-
+		if err := setupClientProxyRouting(
+			Conf.Client.ServerIP,
+			Conf.Client.IfName,
+			Conf.Common.Gateway,
+		); err != nil {
+			return fmt.Errorf("客户端代理路由初始化失败: %w", err)
 		}
 	}
 

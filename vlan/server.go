@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"NetworkSetup/vdhcp"
@@ -15,9 +18,10 @@ import (
 )
 
 type ClientPeer struct {
-	conn     net.Conn
-	mu       sync.Mutex
-	clientID string
+	conn      net.Conn
+	mu        sync.Mutex
+	clientID  string
+	virtualIP string
 }
 type KcpClient struct {
 	sync.RWMutex
@@ -43,6 +47,8 @@ func StartServer() {
 		log.Fatalf("初始化服务端网关失败: %v", err)
 	}
 
+	installServerCleanupSignal()
+
 	if Conf.Common.Mode == "TCP" {
 		startTCPServer()
 	} else if Conf.Common.Mode == "KCP" {
@@ -53,6 +59,20 @@ func StartServer() {
 	} else {
 		log.Fatalf("{%s}不支持类型", Conf.Common.Mode)
 	}
+}
+
+func installServerCleanupSignal() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		<-ch
+		log.Println("收到退出信号，开始清理服务端网关...")
+
+		shutdownServerGateway()
+
+		os.Exit(0)
+	}()
 }
 
 func initServerVDHCP() error {
@@ -66,6 +86,39 @@ func initServerVDHCP() error {
 	serverDHCPMask = Conf.Common.SubnetMask
 
 	log.Printf("✅ 虚拟DHCP已启用: %s - %s", Conf.VDHCP.StartIP, Conf.VDHCP.EndIP)
+	return nil
+}
+
+func initServerGateway() error {
+	if !Conf.Common.Proxy {
+		return nil
+	}
+
+	ifName := Conf.Server.IfName
+	if ifName == "" {
+		ifName = "LwyV-Gateway"
+	}
+
+	mask := Conf.Common.SubnetMask
+
+	dev, err := createTun(ifName, Conf.Common.MTU)
+	if err != nil {
+		return fmt.Errorf("创建服务端TUN失败: %w", err)
+	}
+
+	if err = configureTunAddress(ifName, Conf.Common.Gateway, mask); err != nil {
+		_ = dev.Close()
+		return fmt.Errorf("配置服务端TUN地址失败: %w", err)
+	}
+
+	if err = enableServerGatewayNAT(ifName, Conf.Common.Gateway, mask, Conf.Server.EgressIf); err != nil {
+		_ = dev.Close()
+		return fmt.Errorf("配置服务端NAT失败: %w", err)
+	}
+
+	serverTunDev = dev
+	go tunToClients(dev)
+	log.Printf("✅ 服务端网关已启用: if=%s gw=%s/%s", ifName, Conf.Common.Gateway, mask)
 	return nil
 }
 
@@ -174,13 +227,14 @@ func handleClient(conn net.Conn) {
 			continue
 		}
 
+		// DHCP分配ip后放置伪造
+		if heardInfo.SrcIP != peer.virtualIP {
+			log.Printf("丢弃伪造源IP包: real=%s claimed=%s", peer.virtualIP, heardInfo.SrcIP)
+			continue
+		}
+
 		log.Printf("📥 收到IP包 | 类型:%s | 来源:%s | 目标:%s | 真实地址:%s | 大小:%d",
 			heardInfo.ProtoName, heardInfo.SrcIP, heardInfo.DstIP, conn.RemoteAddr().String(), len(pkt))
-
-		// 注册/刷新客户端虚拟IP映射
-		clientKcpTable.Lock()
-		clientKcpTable.m[heardInfo.SrcIP] = peer
-		clientKcpTable.Unlock()
 
 		// 广播/组播
 		if heardInfo.IsBroadcast {
@@ -194,18 +248,13 @@ func handleClient(conn net.Conn) {
 		clientKcpTable.RUnlock()
 
 		if !exists {
-			if serverTunDev != nil {
-				serverTunMu.Lock()
-				err = writeToTun(serverTunDev, pkt)
-				serverTunMu.Unlock()
-				if err != nil {
-					log.Printf("⚠️ 外网转发失败(写入服务端TUN): %v", err)
-					continue
-				}
-				log.Printf("🌍 外网转发: %s -> %s", heardInfo.SrcIP, heardInfo.DstIP)
+			// 向外网转发流量
+			if err := writeToServerTun(pkt); err != nil {
+				log.Printf("⚠️ 外网转发失败(写入服务端TUN): %v", err)
 				continue
 			}
-			log.Printf("⚠️ 目标不存在: %s (未注册客户端)", heardInfo.DstIP)
+
+			log.Printf("🌍 外网转发: %s -> %s", heardInfo.SrcIP, heardInfo.DstIP)
 			continue
 		}
 
@@ -257,42 +306,24 @@ func handleVDHCPPacket(peer *ClientPeer, pkt []byte) bool {
 		log.Printf("❌ vDHCP响应发送失败 [%s]: %v", peer.clientID, err)
 		return true
 	}
-
+	// 绑定ip到客户端
+	peer.virtualIP = ip
+	clientKcpTable.Lock()
+	clientKcpTable.m[ip] = peer
+	clientKcpTable.Unlock()
 	log.Printf("✅ vDHCP分配成功: clientID=%s ip=%s mask=%s", peer.clientID, ip, serverDHCPMask)
 	return true
 }
 
-func initServerGateway() error {
-	if !Conf.Common.Proxy {
-		return nil
+func writeToServerTun(pkt []byte) error {
+	serverTunMu.Lock()
+	defer serverTunMu.Unlock()
+
+	if serverTunDev == nil {
+		return fmt.Errorf("server TUN is not enabled")
 	}
 
-	ifName := Conf.Server.IfName
-	if ifName == "" {
-		ifName = "LwyV-Gateway"
-	}
-
-	mask := Conf.Common.SubnetMask
-
-	dev, err := createTun(ifName, Conf.Common.MTU)
-	if err != nil {
-		return fmt.Errorf("创建服务端TUN失败: %w", err)
-	}
-
-	if err = configureTunAddress(ifName, Conf.Common.Gateway, mask); err != nil {
-		_ = dev.Close()
-		return fmt.Errorf("配置服务端TUN地址失败: %w", err)
-	}
-
-	if err = enableServerGatewayNAT(ifName, Conf.Common.Gateway, mask, Conf.Server.EgressIf); err != nil {
-		_ = dev.Close()
-		return fmt.Errorf("配置服务端NAT失败: %w", err)
-	}
-
-	serverTunDev = dev
-	go tunToClients(dev)
-	log.Printf("✅ 服务端网关已启用: if=%s gw=%s/%s", ifName, Conf.Common.Gateway, mask)
-	return nil
+	return writeToTun(serverTunDev, pkt)
 }
 
 func tunToClients(dev tun.Device) {

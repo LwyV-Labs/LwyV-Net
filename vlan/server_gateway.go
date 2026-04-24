@@ -2,12 +2,34 @@ package vlan
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
+type serverGatewayNATState struct {
+	mu sync.Mutex
+
+	active bool
+
+	ifName     string
+	egressIf   string
+	subnet     string
+	oldForward string
+}
+
+var serverNATState serverGatewayNATState
+
 func enableServerGatewayNAT(ifName, gatewayIP, mask, egressIf string) error {
+	serverNATState.mu.Lock()
+	defer serverNATState.mu.Unlock()
+
+	if serverNATState.active {
+		disableServerGatewayNATLocked()
+	}
+
 	prefix, err := maskToPrefix(mask)
 	if err != nil {
 		return err
@@ -19,6 +41,12 @@ func enableServerGatewayNAT(ifName, gatewayIP, mask, egressIf string) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	oldForwardBytes, _ := exec.Command("sysctl", "-n", "net.ipv4.ip_forward").Output()
+	oldForward := strings.TrimSpace(string(oldForwardBytes))
+	if oldForward == "" {
+		oldForward = "0"
 	}
 
 	if err = exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").Run(); err != nil {
@@ -33,6 +61,96 @@ func enableServerGatewayNAT(ifName, gatewayIP, mask, egressIf string) error {
 	}
 	if err = ensureIptablesRule("nat", "POSTROUTING", "-s", subnet, "-o", egressIf, "-j", "MASQUERADE"); err != nil {
 		return err
+	}
+
+	// 可选，但建议加：避免 TCP MTU 问题
+	if err = ensureIptablesRule(
+		"mangle",
+		"FORWARD",
+		"-i", ifName,
+		"-p", "tcp",
+		"--tcp-flags", "SYN,RST", "SYN",
+		"-j", "TCPMSS",
+		"--clamp-mss-to-pmtu",
+	); err != nil {
+		return err
+	}
+
+	serverNATState.active = true
+	serverNATState.ifName = ifName
+	serverNATState.egressIf = egressIf
+	serverNATState.subnet = subnet
+	serverNATState.oldForward = oldForward
+
+	return nil
+}
+
+func disableServerGatewayNAT() {
+	serverNATState.mu.Lock()
+	defer serverNATState.mu.Unlock()
+
+	disableServerGatewayNATLocked()
+}
+
+func disableServerGatewayNATLocked() {
+	if !serverNATState.active {
+		return
+	}
+
+	ifName := serverNATState.ifName
+	egressIf := serverNATState.egressIf
+	subnet := serverNATState.subnet
+
+	_ = deleteIptablesRule("mangle", "FORWARD",
+		"-i", ifName,
+		"-p", "tcp",
+		"--tcp-flags", "SYN,RST", "SYN",
+		"-j", "TCPMSS",
+		"--clamp-mss-to-pmtu",
+	)
+
+	_ = deleteIptablesRule("nat", "POSTROUTING",
+		"-s", subnet,
+		"-o", egressIf,
+		"-j", "MASQUERADE",
+	)
+
+	_ = deleteIptablesRule("filter", "FORWARD",
+		"-i", egressIf,
+		"-o", ifName,
+		"-m", "state",
+		"--state", "RELATED,ESTABLISHED",
+		"-j", "ACCEPT",
+	)
+
+	_ = deleteIptablesRule("filter", "FORWARD",
+		"-i", ifName,
+		"-o", egressIf,
+		"-j", "ACCEPT",
+	)
+
+	if serverNATState.oldForward != "" {
+		_ = exec.Command("sysctl", "-w", "net.ipv4.ip_forward="+serverNATState.oldForward).Run()
+	}
+
+	log.Printf("🧹 已清理服务端NAT/FORWARD/mangle规则")
+
+	serverNATState.active = false
+	serverNATState.ifName = ""
+	serverNATState.egressIf = ""
+	serverNATState.subnet = ""
+	serverNATState.oldForward = ""
+}
+
+func deleteIptablesRule(table, chain string, args ...string) error {
+	checkArgs := append([]string{"-t", table, "-C", chain}, args...)
+	if err := exec.Command("iptables", checkArgs...).Run(); err != nil {
+		return nil
+	}
+
+	delArgs := append([]string{"-t", table, "-D", chain}, args...)
+	if err := exec.Command("iptables", delArgs...).Run(); err != nil {
+		return fmt.Errorf("删除iptables规则失败 [%s/%s %v]: %w", table, chain, args, err)
 	}
 
 	return nil
