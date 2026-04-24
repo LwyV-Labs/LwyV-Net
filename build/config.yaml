@@ -6,8 +6,11 @@ common:
   proxy: true
   gateway: "172.19.0.254"
 
-# DHCP配置
-
+# 虚拟DHCP配置
+vdhcp:
+  enabled: true
+  startIP: "172.19.0.10"
+  endIP: "172.19.0.200"
 
 # 服务端配置
 server:
@@ -20,5 +23,7 @@ server:
 client:
   ifName: "LwyV-NetAdapter"
   serverIP: "111.229.84.165:9999"
-  localIP: "172.19.0.1"
-  subnetMask : "255.255.255.0"
+  dhcp: true
+  clientID: "client-001"
+  localIP: ""
+  subnetMask: "255.255.255.0"
