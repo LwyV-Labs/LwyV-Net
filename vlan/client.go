@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"NetworkSetup/vdhcp"
+
 	kcp "github.com/xtaci/kcp-go/v5"
 	"golang.zx2c4.com/wireguard/tun"
 )
@@ -126,17 +127,13 @@ func startKCPClient(dev tun.Device, routeOnce *sync.Once, cleanupRoute *func()) 
 }
 
 func initClientAddress(conn net.Conn, routeOnce *sync.Once, cleanupRoute *func()) error {
-	ip := Conf.Client.LocalIP
-	mask := Conf.Client.SubnetMask
 
-	if Conf.Client.DHCP {
-		dhcpIP, dhcpMask, err := requestVDHCP(conn)
-		if err != nil {
-			return err
-		}
-		ip = dhcpIP
-		mask = dhcpMask
+	dhcpIP, dhcpMask, err := requestVDHCP(conn)
+	if err != nil {
+		return err
 	}
+	ip := dhcpIP
+	mask := dhcpMask
 
 	if err := configureTunAddress(Conf.Client.IfName, ip, mask); err != nil {
 		return fmt.Errorf("配置虚拟网卡 IP 失败: %w", err)
@@ -166,7 +163,7 @@ func initClientAddress(conn net.Conn, routeOnce *sync.Once, cleanupRoute *func()
 }
 
 func requestVDHCP(conn net.Conn) (string, string, error) {
-	discover, err := vdhcp.EncodeDiscover(Conf.Client.ClientID)
+	discover, err := vdhcp.EncodeDiscover()
 	if err != nil {
 		return "", "", err
 	}

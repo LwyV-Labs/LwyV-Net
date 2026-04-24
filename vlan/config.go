@@ -19,30 +19,26 @@ type Config struct {
 
 // CommonConfig 通用配置
 type CommonConfig struct {
-	Password string `yaml:"password"`
-	Key      []byte
-	MTU      int    `yaml:"mtu"`
-	Mode     string `yaml:"mode"`
-	Proxy    bool   `yaml:"proxy"`
-	Gateway  string `yaml:"gateway"`
+	Password   string `yaml:"password"`
+	Key        []byte
+	MTU        int    `yaml:"mtu"`
+	Mode       string `yaml:"mode"`
+	Proxy      bool   `yaml:"proxy"`
+	Gateway    string `yaml:"gateway"`
+	SubnetMask string `yaml:"subnetMask"`
 }
 
 // ServerConfig 服务端配置
 type ServerConfig struct {
-	Port       int    `yaml:"port"`
-	IfName     string `yaml:"ifName"`
-	SubnetMask string `yaml:"subnetMask"`
-	EgressIf   string `yaml:"egressIf"`
+	Port     int    `yaml:"port"`
+	IfName   string `yaml:"ifName"`
+	EgressIf string `yaml:"egressIf"`
 }
 
 // ClientConfig 客户端配置
 type ClientConfig struct {
-	IfName     string `yaml:"ifName"`
-	ServerIP   string `yaml:"serverIP"`
-	LocalIP    string `yaml:"localIP"`
-	SubnetMask string `yaml:"subnetMask"`
-	DHCP       bool   `yaml:"dhcp"`
-	ClientID   string `yaml:"clientID"`
+	IfName   string `yaml:"ifName"`
+	ServerIP string `yaml:"serverIP"`
 }
 
 // VDHCPConfig 虚拟DHCP配置
@@ -83,13 +79,6 @@ func validateConfig() {
 
 	Conf.Common.Mode = strings.ToUpper(Conf.Common.Mode)
 
-	if Conf.Client.DHCP && Conf.Client.ClientID == "" {
-		if Conf.Client.IfName != "" {
-			Conf.Client.ClientID = Conf.Client.IfName
-		} else {
-			Conf.Client.ClientID = "default-client"
-		}
-	}
 }
 
 func get32Key(s string) []byte {

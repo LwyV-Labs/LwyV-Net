@@ -15,15 +15,14 @@ const (
 
 type Message struct {
 	Type       string `json:"type"`
-	ClientID   string `json:"clientID,omitempty"`
 	IP         string `json:"ip,omitempty"`
 	SubnetMask string `json:"subnetMask,omitempty"`
 	Gateway    string `json:"gateway,omitempty"`
 	Reason     string `json:"reason,omitempty"`
 }
 
-func EncodeDiscover(clientID string) ([]byte, error) {
-	return json.Marshal(Message{Type: MessageTypeDiscover, ClientID: clientID})
+func EncodeDiscover() ([]byte, error) {
+	return json.Marshal(Message{Type: MessageTypeDiscover})
 }
 
 func EncodeOffer(ip, subnetMask, gateway string) ([]byte, error) {

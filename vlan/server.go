@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"NetworkSetup/vdhcp"
+
+	"github.com/google/uuid"
 	kcp "github.com/xtaci/kcp-go/v5"
 	"golang.zx2c4.com/wireguard/tun"
 )
@@ -64,10 +66,7 @@ func initServerVDHCP() error {
 	}
 
 	serverDHCP = manager
-	serverDHCPMask = Conf.Server.SubnetMask
-	if serverDHCPMask == "" {
-		serverDHCPMask = Conf.Client.SubnetMask
-	}
+	serverDHCPMask = Conf.Common.SubnetMask
 
 	log.Printf("✅ 虚拟DHCP已启用: %s - %s", Conf.VDHCP.StartIP, Conf.VDHCP.EndIP)
 	return nil
@@ -120,7 +119,7 @@ func startKCPServer() {
 
 func handleClient(conn net.Conn) {
 	peer := &ClientPeer{conn: conn}
-
+	peer.clientID = uuid.NewString()
 	defer func() {
 		clientKcpTable.Lock()
 		for ip, p := range clientKcpTable.m {
@@ -236,25 +235,20 @@ func handleVDHCPPacket(peer *ClientPeer, pkt []byte) bool {
 		return false
 	}
 
-	clientID := msg.ClientID
-	if clientID == "" {
-		clientID = peer.conn.RemoteAddr().String()
-	}
-
-	ip, err := serverDHCP.Allocate(clientID)
+	ip, err := serverDHCP.Allocate(peer.clientID)
 	if err != nil {
 		nak, _ := vdhcp.EncodeNak(err.Error())
 		peer.mu.Lock()
 		_ = peer.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		_ = writePacket(peer.conn, nak)
 		peer.mu.Unlock()
-		log.Printf("❌ vDHCP分配失败 [%s]: %v", clientID, err)
+		log.Printf("❌ vDHCP分配失败 [%s]: %v", peer.clientID, err)
 		return true
 	}
 
 	offer, err := vdhcp.EncodeOffer(ip, serverDHCPMask, Conf.Common.Gateway)
 	if err != nil {
-		log.Printf("❌ vDHCP响应编码失败 [%s]: %v", clientID, err)
+		log.Printf("❌ vDHCP响应编码失败 [%s]: %v", peer.clientID, err)
 		return true
 	}
 
@@ -263,12 +257,11 @@ func handleVDHCPPacket(peer *ClientPeer, pkt []byte) bool {
 	err = writePacket(peer.conn, offer)
 	peer.mu.Unlock()
 	if err != nil {
-		log.Printf("❌ vDHCP响应发送失败 [%s]: %v", clientID, err)
+		log.Printf("❌ vDHCP响应发送失败 [%s]: %v", peer.clientID, err)
 		return true
 	}
 
-	peer.clientID = clientID
-	log.Printf("✅ vDHCP分配成功: clientID=%s ip=%s mask=%s", clientID, ip, serverDHCPMask)
+	log.Printf("✅ vDHCP分配成功: clientID=%s ip=%s mask=%s", peer.clientID, ip, serverDHCPMask)
 	return true
 }
 
@@ -282,10 +275,7 @@ func initServerGateway() error {
 		ifName = "LwyV-Gateway"
 	}
 
-	mask := Conf.Server.SubnetMask
-	if mask == "" {
-		mask = Conf.Client.SubnetMask
-	}
+	mask := Conf.Common.SubnetMask
 
 	dev, err := createTun(ifName, Conf.Common.MTU)
 	if err != nil {
