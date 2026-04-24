@@ -56,9 +56,6 @@ func StartServer() {
 }
 
 func initServerVDHCP() error {
-	if !Conf.VDHCP.Enabled {
-		return nil
-	}
 
 	manager, err := vdhcp.NewManager(Conf.VDHCP.StartIP, Conf.VDHCP.EndIP)
 	if err != nil {

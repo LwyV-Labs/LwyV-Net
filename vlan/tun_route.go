@@ -46,6 +46,12 @@ func setupClientProxyRouting(serverAddr, tunIfName, tunGateway string) (func(), 
 			log.Printf("🧹 已清理TUN默认路由")
 		}
 
+		if err := addDefaultRoute(orig.IfName, orig.Gateway); err != nil {
+			log.Printf("恢复真实默认路由失败: %v", err)
+		} else {
+			log.Printf("🧹 已恢复真实默认路由: default -> %s dev %s", orig.Gateway, orig.IfName)
+		}
+
 		if err := deleteHostRoute(serverIP, orig.Gateway, orig.IfName); err != nil {
 			log.Printf("清理服务端例外路由失败: %v", err)
 		} else {

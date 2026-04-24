@@ -116,7 +116,7 @@ func setupKCPSession(conn *kcp.UDPSession) {
 	conn.SetWriteDelay(false)
 	conn.SetNoDelay(1, 20, 2, 1)
 	conn.SetWindowSize(1024, 1024)
-	conn.SetMtu(1350)
+	conn.SetMtu(Conf.Common.MTU + 64)
 	conn.SetACKNoDelay(true)
 	_ = conn.SetReadBuffer(4 * 1024 * 1024)
 	_ = conn.SetWriteBuffer(4 * 1024 * 1024)

@@ -1,7 +1,7 @@
 # 通用配置
 common:
   password: "183178053"
-  mtu: 1300
+  mtu: 1250
   mode: "kcp"
   proxy: true
   gateway: "172.19.0.254"
@@ -20,6 +20,5 @@ client:
 
 # 虚拟DHCP配置
 vdhcp:
-  enabled: true
   startIP: "172.19.0.10"
   endIP: "172.19.0.200"

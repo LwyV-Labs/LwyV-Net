@@ -43,7 +43,6 @@ type ClientConfig struct {
 
 // VDHCPConfig 虚拟DHCP配置
 type VDHCPConfig struct {
-	Enabled bool   `yaml:"enabled"`
 	StartIP string `yaml:"startIP"`
 	EndIP   string `yaml:"endIP"`
 }
@@ -68,17 +67,12 @@ func InitConfig(path string) {
 
 func validateConfig() {
 	Conf.Common.Key = get32Key(Conf.Common.Password)
-	keyLen := len(Conf.Common.Key)
-	if keyLen != 16 && keyLen != 24 && keyLen != 32 {
-		log.Fatalf("AES key 长度错误: %d，必须是 16/24/32 字节", keyLen)
-	}
 
 	if Conf.Common.MTU <= 0 || Conf.Common.MTU > 9000 {
 		log.Fatalf("MTU 配置异常: %d", Conf.Common.MTU)
 	}
 
 	Conf.Common.Mode = strings.ToUpper(Conf.Common.Mode)
-
 }
 
 func get32Key(s string) []byte {
