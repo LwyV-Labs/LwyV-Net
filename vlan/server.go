@@ -7,13 +7,15 @@ import (
 	"sync"
 	"time"
 
+	"NetworkSetup/vdhcp"
 	kcp "github.com/xtaci/kcp-go/v5"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
 type ClientPeer struct {
-	conn net.Conn
-	mu   sync.Mutex
+	conn     net.Conn
+	mu       sync.Mutex
+	clientID string
 }
 type KcpClient struct {
 	sync.RWMutex
@@ -24,11 +26,17 @@ type KcpClient struct {
 var clientKcpTable = &KcpClient{m: make(map[string]*ClientPeer)}
 
 var (
-	serverTunDev tun.Device
-	serverTunMu  sync.Mutex
+	serverTunDev   tun.Device
+	serverTunMu    sync.Mutex
+	serverDHCP     *vdhcp.Manager
+	serverDHCPMask string
 )
 
 func StartServer() {
+	if err := initServerVDHCP(); err != nil {
+		log.Fatalf("初始化虚拟DHCP失败: %v", err)
+	}
+
 	if err := initServerGateway(); err != nil {
 		log.Fatalf("初始化服务端网关失败: %v", err)
 	}
@@ -43,6 +51,26 @@ func StartServer() {
 	} else {
 		log.Fatalf("{%s}不支持类型", Conf.Common.Mode)
 	}
+}
+
+func initServerVDHCP() error {
+	if !Conf.VDHCP.Enabled {
+		return nil
+	}
+
+	manager, err := vdhcp.NewManager(Conf.VDHCP.StartIP, Conf.VDHCP.EndIP)
+	if err != nil {
+		return err
+	}
+
+	serverDHCP = manager
+	serverDHCPMask = Conf.Server.SubnetMask
+	if serverDHCPMask == "" {
+		serverDHCPMask = Conf.Client.SubnetMask
+	}
+
+	log.Printf("✅ 虚拟DHCP已启用: %s - %s", Conf.VDHCP.StartIP, Conf.VDHCP.EndIP)
+	return nil
 }
 
 func startTCPServer() {
@@ -103,6 +131,11 @@ func handleClient(conn net.Conn) {
 		}
 		clientKcpTable.Unlock()
 
+		if serverDHCP != nil && peer.clientID != "" {
+			serverDHCP.Release(peer.clientID)
+			log.Printf("🧹 回收虚拟DHCP租约: clientID=%s", peer.clientID)
+		}
+
 		err := conn.Close()
 		if err != nil {
 			log.Printf("🔌 客户端关闭失败")
@@ -132,6 +165,10 @@ func handleClient(conn net.Conn) {
 				log.Printf("PONG发送失败: %v", err)
 				return
 			}
+			continue
+		}
+
+		if handleVDHCPPacket(peer, pkt) {
 			continue
 		}
 
@@ -187,6 +224,52 @@ func handleClient(conn net.Conn) {
 
 		log.Printf("✅ 成功转发至: %s", heardInfo.DstIP)
 	}
+}
+
+func handleVDHCPPacket(peer *ClientPeer, pkt []byte) bool {
+	if serverDHCP == nil {
+		return false
+	}
+
+	msg, err := vdhcp.DecodeMessage(pkt)
+	if err != nil || msg.Type != vdhcp.MessageTypeDiscover {
+		return false
+	}
+
+	clientID := msg.ClientID
+	if clientID == "" {
+		clientID = peer.conn.RemoteAddr().String()
+	}
+
+	ip, err := serverDHCP.Allocate(clientID)
+	if err != nil {
+		nak, _ := vdhcp.EncodeNak(err.Error())
+		peer.mu.Lock()
+		_ = peer.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_ = writePacket(peer.conn, nak)
+		peer.mu.Unlock()
+		log.Printf("❌ vDHCP分配失败 [%s]: %v", clientID, err)
+		return true
+	}
+
+	offer, err := vdhcp.EncodeOffer(ip, serverDHCPMask, Conf.Common.Gateway)
+	if err != nil {
+		log.Printf("❌ vDHCP响应编码失败 [%s]: %v", clientID, err)
+		return true
+	}
+
+	peer.mu.Lock()
+	_ = peer.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	err = writePacket(peer.conn, offer)
+	peer.mu.Unlock()
+	if err != nil {
+		log.Printf("❌ vDHCP响应发送失败 [%s]: %v", clientID, err)
+		return true
+	}
+
+	peer.clientID = clientID
+	log.Printf("✅ vDHCP分配成功: clientID=%s ip=%s mask=%s", clientID, ip, serverDHCPMask)
+	return true
 }
 
 func initServerGateway() error {

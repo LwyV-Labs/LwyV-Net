@@ -14,6 +14,7 @@ type Config struct {
 	Common CommonConfig `yaml:"common"`
 	Server ServerConfig `yaml:"server"`
 	Client ClientConfig `yaml:"client"`
+	VDHCP  VDHCPConfig  `yaml:"vdhcp"`
 }
 
 // CommonConfig 通用配置
@@ -40,6 +41,15 @@ type ClientConfig struct {
 	ServerIP   string `yaml:"serverIP"`
 	LocalIP    string `yaml:"localIP"`
 	SubnetMask string `yaml:"subnetMask"`
+	DHCP       bool   `yaml:"dhcp"`
+	ClientID   string `yaml:"clientID"`
+}
+
+// VDHCPConfig 虚拟DHCP配置
+type VDHCPConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	StartIP string `yaml:"startIP"`
+	EndIP   string `yaml:"endIP"`
 }
 
 var Conf Config
@@ -61,7 +71,6 @@ func InitConfig(path string) {
 }
 
 func validateConfig() {
-	// 根据密码生成32位密钥
 	Conf.Common.Key = get32Key(Conf.Common.Password)
 	keyLen := len(Conf.Common.Key)
 	if keyLen != 16 && keyLen != 24 && keyLen != 32 {
@@ -74,6 +83,13 @@ func validateConfig() {
 
 	Conf.Common.Mode = strings.ToUpper(Conf.Common.Mode)
 
+	if Conf.Client.DHCP && Conf.Client.ClientID == "" {
+		if Conf.Client.IfName != "" {
+			Conf.Client.ClientID = Conf.Client.IfName
+		} else {
+			Conf.Client.ClientID = "default-client"
+		}
+	}
 }
 
 func get32Key(s string) []byte {

@@ -1,13 +1,12 @@
 package main
 
 import (
-	"NetworkSetup/vlan_net"
+	vlan "NetworkSetup/vlan"
 	"log"
 	"os"
 )
 
 func main() {
-
 	vlan.InitConfig("config.yaml")
 
 	if len(os.Args) < 2 {

@@ -1,10 +1,13 @@
 package vlan
 
 import (
+	"fmt"
 	"log"
 	"net"
+	"sync"
 	"time"
 
+	"NetworkSetup/vdhcp"
 	kcp "github.com/xtaci/kcp-go/v5"
 	"golang.zx2c4.com/wireguard/tun"
 )
@@ -26,39 +29,31 @@ func StartClient() {
 	}
 	defer dev.Close()
 
-	if err := configureTunAddress(Conf.Client.IfName, Conf.Client.LocalIP, Conf.Client.SubnetMask); err != nil {
-		log.Fatalf("配置虚拟网卡 IP 失败: %v", err)
-	}
-
 	if err := allowTunTraffic(Conf.Client.IfName); err != nil {
 		log.Printf("放行虚拟网卡流量失败: %v", err)
 	}
 	defer cleanupTunTraffic()
 
-	if Conf.Common.Proxy {
-		cleanupRoute, err := setupClientProxyRouting(
-			Conf.Client.ServerIP,
-			Conf.Client.IfName,
-			Conf.Common.Gateway,
-		)
-		if err != nil {
-			log.Fatalf("客户端代理路由初始化失败: %v", err)
-		}
-		defer cleanupRoute()
-	}
-
 	go tunToPacketQueue(dev)
 
+	var routeOnce sync.Once
+	var cleanupRoute func()
+	defer func() {
+		if cleanupRoute != nil {
+			cleanupRoute()
+		}
+	}()
+
 	if Conf.Common.Mode == "TCP" {
-		startTCPClient(dev)
+		startTCPClient(dev, &routeOnce, &cleanupRoute)
 	} else if Conf.Common.Mode == "KCP" {
-		startKCPClient(dev)
+		startKCPClient(dev, &routeOnce, &cleanupRoute)
 	} else {
 		log.Fatalf("不支持类型: %s", Conf.Common.Mode)
 	}
 }
 
-func startTCPClient(dev tun.Device) {
+func startTCPClient(dev tun.Device, routeOnce *sync.Once, cleanupRoute *func()) {
 	for {
 		conn, err := net.DialTimeout("tcp", Conf.Client.ServerIP, 5*time.Second)
 		if err != nil {
@@ -67,6 +62,13 @@ func startTCPClient(dev tun.Device) {
 			continue
 		}
 		log.Printf("✅ 已连接服务端: %s", Conf.Client.ServerIP)
+
+		if err = initClientAddress(conn, routeOnce, cleanupRoute); err != nil {
+			log.Printf("客户端地址初始化失败: %v", err)
+			_ = conn.Close()
+			time.Sleep(1 * time.Second)
+			continue
+		}
 
 		// TCP -> TUN 单独运行；一旦它退出，说明当前TCP连接不可用，需要重连。
 		tcpDone := make(chan struct{})
@@ -83,7 +85,7 @@ func startTCPClient(dev tun.Device) {
 	}
 }
 
-func startKCPClient(dev tun.Device) {
+func startKCPClient(dev tun.Device, routeOnce *sync.Once, cleanupRoute *func()) {
 
 	block, err := kcp.NewAESGCMCrypt(Conf.Common.Key)
 	if err != nil {
@@ -101,6 +103,13 @@ func startKCPClient(dev tun.Device) {
 
 		log.Printf("✅ 已连接KCP服务端: %s", Conf.Client.ServerIP)
 
+		if err = initClientAddress(conn, routeOnce, cleanupRoute); err != nil {
+			log.Printf("客户端地址初始化失败: %v", err)
+			_ = conn.Close()
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
 		// KCP -> TUN 单独运行；一旦它退出，说明当前KCP连接不可用，需要重连。
 		kcpDone := make(chan struct{})
 		go func() {
@@ -114,6 +123,83 @@ func startKCPClient(dev tun.Device) {
 		_ = conn.Close()
 		log.Println("连接断开，准备重连...")
 	}
+}
+
+func initClientAddress(conn net.Conn, routeOnce *sync.Once, cleanupRoute *func()) error {
+	ip := Conf.Client.LocalIP
+	mask := Conf.Client.SubnetMask
+
+	if Conf.Client.DHCP {
+		dhcpIP, dhcpMask, err := requestVDHCP(conn)
+		if err != nil {
+			return err
+		}
+		ip = dhcpIP
+		mask = dhcpMask
+	}
+
+	if err := configureTunAddress(Conf.Client.IfName, ip, mask); err != nil {
+		return fmt.Errorf("配置虚拟网卡 IP 失败: %w", err)
+	}
+	log.Printf("✅ 客户端地址已配置: %s/%s", ip, mask)
+
+	if Conf.Common.Proxy {
+		var routeErr error
+		routeOnce.Do(func() {
+			cleanup, err := setupClientProxyRouting(
+				Conf.Client.ServerIP,
+				Conf.Client.IfName,
+				Conf.Common.Gateway,
+			)
+			if err != nil {
+				routeErr = err
+				return
+			}
+			*cleanupRoute = cleanup
+		})
+		if routeErr != nil {
+			return fmt.Errorf("客户端代理路由初始化失败: %w", routeErr)
+		}
+	}
+
+	return nil
+}
+
+func requestVDHCP(conn net.Conn) (string, string, error) {
+	discover, err := vdhcp.EncodeDiscover(Conf.Client.ClientID)
+	if err != nil {
+		return "", "", err
+	}
+
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if err = writePacket(conn, discover); err != nil {
+		return "", "", fmt.Errorf("发送DHCP DISCOVER失败: %w", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(8 * time.Second))
+	pkt, err := readPacket(conn, Conf.Common.MTU)
+	if err != nil {
+		return "", "", fmt.Errorf("读取DHCP OFFER失败: %w", err)
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+
+	msg, err := vdhcp.DecodeMessage(pkt)
+	if err != nil {
+		return "", "", fmt.Errorf("解析DHCP OFFER失败: %w", err)
+	}
+
+	if msg.Type == vdhcp.MessageTypeNak {
+		return "", "", fmt.Errorf("DHCP NAK: %s", msg.Reason)
+	}
+	if msg.Type != vdhcp.MessageTypeOffer {
+		return "", "", fmt.Errorf("unexpected DHCP message type: %s", msg.Type)
+	}
+	if msg.IP == "" || msg.SubnetMask == "" {
+		return "", "", fmt.Errorf("DHCP OFFER缺少IP或子网掩码")
+	}
+
+	log.Printf("✅ 收到vDHCP地址: %s/%s", msg.IP, msg.SubnetMask)
+	return msg.IP, msg.SubnetMask, nil
 }
 
 // tunToPacketQueue TUN -> packet queue
