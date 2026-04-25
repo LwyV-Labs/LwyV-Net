@@ -198,16 +198,16 @@ func handleClient(conn net.Conn) {
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 
-		pkt, err := readPacket(conn, Conf.Common.MTU)
+		frame, err := readFrame(conn, Conf.Common.MTU)
 		if err != nil {
 			log.Printf("客户端断开连接: %s, 错误: %v", conn.RemoteAddr().String(), err)
 			return
 		}
 
-		if string(pkt) == "PING" {
+		if frame.Type == PacketTypePing {
 			peer.mu.Lock()
 			_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			err := writePacket(conn, []byte("PONG"))
+			err := writeFrame(conn, PacketTypePong, nil)
 			peer.mu.Unlock()
 
 			if err != nil {
@@ -216,8 +216,14 @@ func handleClient(conn net.Conn) {
 			}
 			continue
 		}
+		if frame.Type != PacketTypeIP && frame.Type != PacketTypeVDHCP {
+			log.Printf("忽略未知报文类型: %d", frame.Type)
+			continue
+		}
 
-		if handleVDHCPPacket(peer, pkt) {
+		pkt := frame.IPPacket
+
+		if frame.Type == PacketTypeVDHCP && handleVDHCPPacket(peer, pkt) {
 			continue
 		}
 
@@ -259,7 +265,7 @@ func handleClient(conn net.Conn) {
 		}
 
 		targetPeer.mu.Lock()
-		err = writePacket(targetPeer.conn, pkt)
+		err = writeFrame(targetPeer.conn, PacketTypeIP, pkt)
 		targetPeer.mu.Unlock()
 
 		if err != nil {
@@ -286,7 +292,7 @@ func handleVDHCPPacket(peer *ClientPeer, pkt []byte) bool {
 		nak, _ := vdhcp.EncodeNak(err.Error())
 		peer.mu.Lock()
 		_ = peer.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		_ = writePacket(peer.conn, nak)
+		_ = writeFrame(peer.conn, PacketTypeVDHCP, nak)
 		peer.mu.Unlock()
 		log.Printf("❌ vDHCP分配失败 [%s]: %v", peer.clientID, err)
 		return true
@@ -300,7 +306,7 @@ func handleVDHCPPacket(peer *ClientPeer, pkt []byte) bool {
 
 	peer.mu.Lock()
 	_ = peer.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	err = writePacket(peer.conn, offer)
+	err = writeFrame(peer.conn, PacketTypeVDHCP, offer)
 	peer.mu.Unlock()
 	if err != nil {
 		log.Printf("❌ vDHCP响应发送失败 [%s]: %v", peer.clientID, err)
@@ -356,7 +362,7 @@ func tunToClients(dev tun.Device) {
 			}
 
 			targetPeer.mu.Lock()
-			err = writePacket(targetPeer.conn, pkt)
+			err = writeFrame(targetPeer.conn, PacketTypeIP, pkt)
 			targetPeer.mu.Unlock()
 			if err != nil {
 				log.Printf("服务端TUN回包转发失败 [%s]: %v", heardInfo.DstIP, err)
