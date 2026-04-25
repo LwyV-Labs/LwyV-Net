@@ -186,6 +186,7 @@ func handleClient(conn net.Conn) {
 			log.Printf("客户端断开连接: %s, 错误: %v", conn.RemoteAddr().String(), err)
 			return
 		}
+		//log.Printf("📦 收到帧: type=%d len=%d from=%s", frame.Type, len(frame.IPPacket), conn.RemoteAddr().String())
 
 		switch frame.Type {
 		case PacketTypePing:
@@ -321,14 +322,14 @@ func handleIPPacket(peer *ClientPeer, pkt []byte) {
 		return
 	}
 
-	log.Printf(
-		"📥 收到IP包 | 类型:%s | 来源:%s | 目标:%s | 真实地址:%s | 大小:%d",
-		heardInfo.ProtoName,
-		heardInfo.SrcIP,
-		heardInfo.DstIP,
-		peer.conn.RemoteAddr().String(),
-		len(pkt),
-	)
+	//log.Printf(
+	//	"📥 收到IP包 | 类型:%s | 来源:%s | 目标:%s | 真实地址:%s | 大小:%d",
+	//	heardInfo.ProtoName,
+	//	heardInfo.SrcIP,
+	//	heardInfo.DstIP,
+	//	peer.conn.RemoteAddr().String(),
+	//	len(pkt),
+	//)
 
 	// 广播/组播
 	if heardInfo.IsBroadcast {
