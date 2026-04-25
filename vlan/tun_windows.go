@@ -18,7 +18,15 @@ const (
 const tunWriteOffset = 0
 
 func runPowerShell(ps string) error {
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
+	cmd := exec.Command(
+		"powershell.exe",
+		"-NoProfile",
+		"-NonInteractive",
+		"-ExecutionPolicy", "Bypass",
+		"-Command",
+		ps,
+	)
+
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%v, output: %s", err, string(out))
@@ -27,12 +35,37 @@ func runPowerShell(ps string) error {
 }
 
 func runPowerShellOutput(ps string) (string, error) {
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
+	cmd := exec.Command(
+		"powershell.exe",
+		"-NoProfile",
+		"-NonInteractive",
+		"-ExecutionPolicy", "Bypass",
+		"-Command",
+		ps,
+	)
+
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("%v, output: %s", err, string(out))
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func psResolveInterfaceIndexFunc() string {
+	return `
+function Resolve-InterfaceIndex {
+    param([string]$ifRef)
+
+    if ($ifRef -match '^\d+$') {
+        return [int]$ifRef
+    }
+
+    $iface = Get-NetIPInterface -AddressFamily IPv4 -InterfaceAlias $ifRef -ErrorAction Stop |
+        Select-Object -First 1
+
+    return [int]$iface.InterfaceIndex
+}
+`
 }
 
 func removeFirewallRulesForTun() error {
@@ -57,9 +90,13 @@ func configureTunAddress(ifName, ip, mask string) error {
 func allowTunTraffic(ifName string) error {
 	ps := fmt.Sprintf(`
 $alias = %q
+
+Get-NetFirewallRule -DisplayName %q -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+Get-NetFirewallRule -DisplayName %q -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+
 New-NetFirewallRule -DisplayName %q -Direction Inbound  -Action Allow -Enabled True -Profile Any -InterfaceAlias $alias
 New-NetFirewallRule -DisplayName %q -Direction Outbound -Action Allow -Enabled True -Profile Any -InterfaceAlias $alias
-`, ifName, fwRuleIn, fwRuleOut)
+`, ifName, fwRuleIn, fwRuleOut, fwRuleIn, fwRuleOut)
 
 	return runPowerShell(ps)
 }
@@ -82,6 +119,7 @@ if (-not $rt) {
 $ifAlias = (Get-NetIPInterface -AddressFamily IPv4 -InterfaceIndex $rt.InterfaceIndex -ErrorAction Stop).InterfaceAlias
 Write-Output ($rt.NextHop + "|" + $ifAlias + "|" + $rt.InterfaceIndex)
 `
+
 	out, err := runPowerShellOutput(ps)
 	if err != nil {
 		return nil, err
@@ -99,56 +137,73 @@ Write-Output ($rt.NextHop + "|" + $ifAlias + "|" + $rt.InterfaceIndex)
 	}, nil
 }
 
-func addHostRoute(hostIP, gateway, ifName string) error {
+func addHostRoute(hostIP, gateway, ifRef string) error {
 	ps := fmt.Sprintf(`
-$dst   = %q
-$gw    = %q
-$alias = %q
+%s
 
-Get-NetRoute -AddressFamily IPv4 -DestinationPrefix $dst -InterfaceAlias $alias -ErrorAction SilentlyContinue |
+$dst = %q
+$gw = %q
+$ifRef = %q
+$ifIndex = Resolve-InterfaceIndex $ifRef
+
+Get-NetRoute -AddressFamily IPv4 -DestinationPrefix $dst -ErrorAction SilentlyContinue |
+    Where-Object { $_.InterfaceIndex -eq $ifIndex } |
     Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
 
-New-NetRoute -AddressFamily IPv4 -DestinationPrefix $dst -InterfaceAlias $alias -NextHop $gw -RouteMetric 1 -ErrorAction Stop
-`, hostIP+"/32", gateway, ifName)
+New-NetRoute -AddressFamily IPv4 -DestinationPrefix $dst -InterfaceIndex $ifIndex -NextHop $gw -RouteMetric 1 -ErrorAction Stop
+`, psResolveInterfaceIndexFunc(), hostIP+"/32", gateway, ifRef)
 
 	return runPowerShell(ps)
 }
 
-func deleteHostRoute(hostIP, gateway, ifName string) error {
+func deleteHostRoute(hostIP, gateway, ifRef string) error {
 	ps := fmt.Sprintf(`
-$dst   = %q
-$alias = %q
+%s
 
-Get-NetRoute -AddressFamily IPv4 -DestinationPrefix $dst -InterfaceAlias $alias -ErrorAction SilentlyContinue |
+$dst = %q
+$ifRef = %q
+$ifIndex = Resolve-InterfaceIndex $ifRef
+
+Get-NetRoute -AddressFamily IPv4 -DestinationPrefix $dst -ErrorAction SilentlyContinue |
+    Where-Object { $_.InterfaceIndex -eq $ifIndex } |
     Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
-`, hostIP+"/32", ifName)
+`, psResolveInterfaceIndexFunc(), hostIP+"/32", ifRef)
 
 	return runPowerShell(ps)
 }
 
-func addDefaultRoute(ifName, gateway string) error {
+func addDefaultRoute(ifRef, gateway string) error {
 	ps := fmt.Sprintf(`
-$alias = %q
-$gw    = %q
+%s
+
+$ifRef = %q
+$gw = %q
 
 Start-Sleep -Milliseconds 800
 
-Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -InterfaceAlias $alias -ErrorAction SilentlyContinue |
+$ifIndex = Resolve-InterfaceIndex $ifRef
+
+Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
+    Where-Object { $_.InterfaceIndex -eq $ifIndex } |
     Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
 
-New-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -InterfaceAlias $alias -NextHop $gw -RouteMetric 5 -ErrorAction Stop
-`, ifName, gateway)
+New-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -InterfaceIndex $ifIndex -NextHop $gw -RouteMetric 5 -ErrorAction Stop
+`, psResolveInterfaceIndexFunc(), ifRef, gateway)
 
 	return runPowerShell(ps)
 }
 
-func deleteDefaultRoute(ifName, gateway string) error {
+func deleteDefaultRoute(ifRef, gateway string) error {
 	ps := fmt.Sprintf(`
-$alias = %q
+%s
 
-Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -InterfaceAlias $alias -ErrorAction SilentlyContinue |
+$ifRef = %q
+$ifIndex = Resolve-InterfaceIndex $ifRef
+
+Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
+    Where-Object { $_.InterfaceIndex -eq $ifIndex } |
     Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
-`, ifName)
+`, psResolveInterfaceIndexFunc(), ifRef)
 
 	return runPowerShell(ps)
 }

@@ -23,6 +23,7 @@ type clientProxyRouteState struct {
 
 	origGateway string
 	origIfName  string
+	origIfIndex string
 
 	tunIfName  string
 	tunGateway string
@@ -49,25 +50,43 @@ func setupClientProxyRouting(serverAddr, tunIfName, tunGateway string) error {
 		return fmt.Errorf("探测真实默认路由失败: %w", err)
 	}
 
-	log.Printf("🌐 当前真实默认路由: if=%s gw=%s", orig.IfName, orig.Gateway)
+	// Windows 下优先使用 InterfaceIndex，避免中文 InterfaceAlias 导致 New-NetRoute 失败。
+	// Linux 下 IfIndex 为空，仍然使用 IfName。
+	origIfRef := orig.IfName
+	if orig.IfIndex != "" {
+		origIfRef = orig.IfIndex
+	}
+
+	log.Printf("🌐 当前真实默认路由: if=%s ifIndex=%s gw=%s",
+		orig.IfName,
+		orig.IfIndex,
+		orig.Gateway,
+	)
 
 	// 先给服务端公网 IP 加例外路由，强制走真实出口
-	if err := addHostRoute(serverIP, orig.Gateway, orig.IfName); err != nil {
+	if err := addHostRoute(serverIP, orig.Gateway, origIfRef); err != nil {
 		return fmt.Errorf("添加服务端例外路由失败: %w", err)
 	}
-	log.Printf("✅ 已添加服务端例外路由: %s/32 -> %s dev %s", serverIP, orig.Gateway, orig.IfName)
+
+	log.Printf("✅ 已添加服务端例外路由: %s/32 -> %s dev %s",
+		serverIP,
+		orig.Gateway,
+		origIfRef,
+	)
 
 	// 再把默认路由切到 TUN
 	if err := addDefaultRoute(tunIfName, tunGateway); err != nil {
-		_ = deleteHostRoute(serverIP, orig.Gateway, orig.IfName)
+		_ = deleteHostRoute(serverIP, orig.Gateway, origIfRef)
 		return fmt.Errorf("切换默认路由到TUN失败: %w", err)
 	}
+
 	log.Printf("✅ 已切换默认路由到TUN: default -> %s dev %s", tunGateway, tunIfName)
 
 	clientProxyRoute.active = true
 	clientProxyRoute.serverIP = serverIP
 	clientProxyRoute.origGateway = orig.Gateway
 	clientProxyRoute.origIfName = orig.IfName
+	clientProxyRoute.origIfIndex = orig.IfIndex
 	clientProxyRoute.tunIfName = tunIfName
 	clientProxyRoute.tunGateway = tunGateway
 
@@ -97,22 +116,29 @@ func cleanupClientProxyRoutingLocked() {
 		return
 	}
 
+	// Windows 下恢复真实默认路由时继续使用 InterfaceIndex。
+	// Linux 下 origIfIndex 为空，使用原始网卡名。
+	origIfRef := clientProxyRoute.origIfName
+	if clientProxyRoute.origIfIndex != "" {
+		origIfRef = clientProxyRoute.origIfIndex
+	}
+
 	if err := deleteDefaultRoute(clientProxyRoute.tunIfName, clientProxyRoute.tunGateway); err != nil {
 		log.Printf("清理TUN默认路由失败: %v", err)
 	} else {
 		log.Printf("🧹 已清理TUN默认路由")
 	}
 
-	if err := addDefaultRoute(clientProxyRoute.origIfName, clientProxyRoute.origGateway); err != nil {
+	if err := addDefaultRoute(origIfRef, clientProxyRoute.origGateway); err != nil {
 		log.Printf("恢复真实默认路由失败: %v", err)
 	} else {
 		log.Printf("🧹 已恢复真实默认路由: default -> %s dev %s",
 			clientProxyRoute.origGateway,
-			clientProxyRoute.origIfName,
+			origIfRef,
 		)
 	}
 
-	if err := deleteHostRoute(clientProxyRoute.serverIP, clientProxyRoute.origGateway, clientProxyRoute.origIfName); err != nil {
+	if err := deleteHostRoute(clientProxyRoute.serverIP, clientProxyRoute.origGateway, origIfRef); err != nil {
 		log.Printf("清理服务端例外路由失败: %v", err)
 	} else {
 		log.Printf("🧹 已清理服务端例外路由")
@@ -122,6 +148,7 @@ func cleanupClientProxyRoutingLocked() {
 	clientProxyRoute.serverIP = ""
 	clientProxyRoute.origGateway = ""
 	clientProxyRoute.origIfName = ""
+	clientProxyRoute.origIfIndex = ""
 	clientProxyRoute.tunIfName = ""
 	clientProxyRoute.tunGateway = ""
 }
