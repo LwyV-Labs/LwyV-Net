@@ -11,6 +11,21 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
+type PacketType uint8
+
+const (
+	PacketTypeIP PacketType = iota + 1
+	PacketTypePing
+	PacketTypePong
+	PacketTypeVDHCP
+)
+
+type TunnelFrame struct {
+	Length   uint32
+	Type     PacketType
+	IPPacket []byte
+}
+
 //=========================== IP 报文解析 ===========================
 
 type IPHeaderInfo struct {
@@ -113,7 +128,7 @@ func broadcastPacket(heardInfo *IPHeaderInfo, pkt []byte) {
 
 	for ip, targetPeer := range targets {
 		targetPeer.mu.Lock()
-		err := writePacket(targetPeer.conn, pkt)
+		err := writeFrame(targetPeer.conn, PacketTypeIP, pkt)
 		targetPeer.mu.Unlock()
 		if err != nil {
 			log.Printf("广播转发 %s 失败: %v", ip, err)
@@ -147,29 +162,38 @@ func setupKCPSession(conn *kcp.UDPSession) {
 }
 
 // readPacket 读包
-func readPacket(conn net.Conn, maxSize int) ([]byte, error) {
+func readFrame(conn net.Conn, maxPayloadSize int) (*TunnelFrame, error) {
 	lenBuf := make([]byte, 4)
 	if _, err := io.ReadFull(conn, lenBuf); err != nil {
 		return nil, err
 	}
 
-	pktLen := binary.BigEndian.Uint32(lenBuf)
-	if pktLen == 0 || pktLen > uint32(maxSize) {
-		return nil, fmt.Errorf("invalid pkt len: %d", pktLen)
+	frameLen := binary.BigEndian.Uint32(lenBuf)
+	if frameLen < 1 || frameLen > uint32(maxPayloadSize+1) {
+		return nil, fmt.Errorf("invalid frame len: %d", frameLen)
 	}
 
-	pkt := make([]byte, pktLen)
-	if _, err := io.ReadFull(conn, pkt); err != nil {
+	raw := make([]byte, frameLen)
+	if _, err := io.ReadFull(conn, raw); err != nil {
 		return nil, err
 	}
-	return pkt, nil
+
+	payload := raw[1:]
+	frame := &TunnelFrame{
+		Length:   uint32(len(payload)),
+		Type:     PacketType(raw[0]),
+		IPPacket: payload,
+	}
+	return frame, nil
 }
 
 // writePacket 写包
-func writePacket(conn net.Conn, pkt []byte) error {
-	buf := make([]byte, 4+len(pkt))
-	binary.BigEndian.PutUint32(buf[:4], uint32(len(pkt)))
-	copy(buf[4:], pkt)
+func writeFrame(conn net.Conn, packetType PacketType, payload []byte) error {
+	frameLen := 1 + len(payload)
+	buf := make([]byte, 4+frameLen)
+	binary.BigEndian.PutUint32(buf[:4], uint32(frameLen))
+	buf[4] = byte(packetType)
+	copy(buf[5:], payload)
 
 	for len(buf) > 0 {
 		n, err := conn.Write(buf)

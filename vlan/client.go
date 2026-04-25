@@ -178,18 +178,21 @@ func requestVDHCP(conn net.Conn) (string, string, error) {
 	}
 
 	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if err = writePacket(conn, discover); err != nil {
+	if err = writeFrame(conn, PacketTypeVDHCP, discover); err != nil {
 		return "", "", fmt.Errorf("发送DHCP DISCOVER失败: %w", err)
 	}
 
 	_ = conn.SetReadDeadline(time.Now().Add(8 * time.Second))
-	pkt, err := readPacket(conn, Conf.Common.MTU)
+	frame, err := readFrame(conn, Conf.Common.MTU)
 	if err != nil {
 		return "", "", fmt.Errorf("读取DHCP OFFER失败: %w", err)
 	}
 	_ = conn.SetReadDeadline(time.Time{})
+	if frame.Type != PacketTypeVDHCP {
+		return "", "", fmt.Errorf("unexpected DHCP frame type: %d", frame.Type)
+	}
 
-	msg, err := vdhcp.DecodeMessage(pkt)
+	msg, err := vdhcp.DecodeMessage(frame.IPPacket)
 	if err != nil {
 		return "", "", fmt.Errorf("解析DHCP OFFER失败: %w", err)
 	}
@@ -244,14 +247,14 @@ func clientSendLoop(conn net.Conn, kcpDone <-chan struct{}) {
 
 		case <-ticker.C:
 			_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			if err := writePacket(conn, []byte("PING")); err != nil {
+			if err := writeFrame(conn, PacketTypePing, nil); err != nil {
 				log.Printf("%s心跳发送失败: %v", Conf.Common.Mode, err)
 				return
 			}
 
 		case pkt := <-tunPacketChan:
 			_ = conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			if err := writePacket(conn, pkt); err != nil {
+			if err := writeFrame(conn, PacketTypeIP, pkt); err != nil {
 				log.Printf("%s发送失败: %v", Conf.Common.Mode, err)
 				return
 			}
@@ -266,16 +269,20 @@ func connToTun(dev tun.Device, conn net.Conn) {
 		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 
 		// 接收包
-		pkt, err := readPacket(conn, Conf.Common.MTU)
+		frame, err := readFrame(conn, Conf.Common.MTU)
 		if err != nil {
 			log.Printf("%s接收失败: %v", Conf.Common.Mode, err)
 			return
 		}
-		if string(pkt) == "PONG" {
+		if frame.Type == PacketTypePong {
+			continue
+		}
+		if frame.Type != PacketTypeIP {
+			log.Printf("忽略未知报文类型: %d", frame.Type)
 			continue
 		}
 		// 写入TUN设备数据
-		err = writeToTun(dev, pkt)
+		err = writeToTun(dev, frame.IPPacket)
 		if err != nil {
 			log.Printf("TUN写入失败: %v", err)
 			return
