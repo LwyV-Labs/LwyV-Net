@@ -11,21 +11,6 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-type PacketType uint8
-
-const (
-	PacketTypeIP PacketType = iota + 1
-	PacketTypePing
-	PacketTypePong
-	PacketTypeVDHCP
-)
-
-type TunnelFrame struct {
-	Length   uint32
-	Type     PacketType
-	IPPacket []byte
-}
-
 //=========================== IP 报文解析 ===========================
 
 type IPHeaderInfo struct {
@@ -149,6 +134,21 @@ func maskToPrefix(mask string) (int, error) {
 }
 
 //=========================== TCP，KCP 配置与读写 ===========================
+
+type PacketType uint8
+
+const (
+	PacketTypeIP PacketType = iota + 1
+	PacketTypePing
+	PacketTypePong
+	PacketTypeVDHCP
+)
+
+type TunnelFrame struct {
+	Length   uint32
+	Type     PacketType
+	IPPacket []byte
+}
 
 // setupKCPSession设置KCP
 func setupKCPSession(conn *kcp.UDPSession) {
