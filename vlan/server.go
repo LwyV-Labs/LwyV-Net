@@ -167,31 +167,14 @@ func startKCPServer() {
 	}
 }
 
+// 处理单个用户连接
 func handleClient(conn net.Conn) {
-	peer := &ClientPeer{conn: conn}
-	peer.clientID = uuid.NewString()
-	defer func() {
-		clientKcpTable.Lock()
-		for ip, p := range clientKcpTable.m {
-			if p == peer {
-				delete(clientKcpTable.m, ip)
-				log.Printf("🗑️ 清理客户端路由: %s", ip)
-			}
-		}
-		clientKcpTable.Unlock()
+	peer := &ClientPeer{
+		conn:     conn,
+		clientID: uuid.NewString(),
+	}
 
-		if serverDHCP != nil && peer.clientID != "" {
-			serverDHCP.Release(peer.clientID)
-			log.Printf("🧹 回收虚拟DHCP租约: clientID=%s", peer.clientID)
-		}
-
-		err := conn.Close()
-		if err != nil {
-			log.Printf("🔌 客户端关闭失败")
-			return
-		}
-		log.Printf("🔌 客户端已断开: %s", conn.RemoteAddr().String())
-	}()
+	defer cleanupClientPeer(peer)
 
 	log.Printf("🔌 新客户端连接: %s", conn.RemoteAddr().String())
 
@@ -204,103 +187,97 @@ func handleClient(conn net.Conn) {
 			return
 		}
 
-		if frame.Type == PacketTypePing {
-			peer.mu.Lock()
-			_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			err := writeFrame(conn, PacketTypePong, nil)
-			peer.mu.Unlock()
-
-			if err != nil {
-				log.Printf("PONG发送失败: %v", err)
+		switch frame.Type {
+		case PacketTypePing:
+			if !handlePingPacket(peer) {
 				return
 			}
-			continue
-		}
-		if frame.Type != PacketTypeIP && frame.Type != PacketTypeVDHCP {
+
+		case PacketTypeVDHCP:
+			handleVDHCPPacket(peer, frame.IPPacket)
+
+		case PacketTypeIP:
+			handleIPPacket(peer, frame.IPPacket)
+
+		default:
 			log.Printf("忽略未知报文类型: %d", frame.Type)
-			continue
 		}
-
-		pkt := frame.IPPacket
-
-		if frame.Type == PacketTypeVDHCP && handleVDHCPPacket(peer, pkt) {
-			continue
-		}
-
-		heardInfo, err := headerParsing(pkt)
-		if err != nil {
-			log.Printf("包头解析错误，丢弃：%v", err)
-			continue
-		}
-
-		// DHCP分配ip后放置伪造
-		if heardInfo.SrcIP != peer.virtualIP {
-			log.Printf("丢弃伪造源IP包: real=%s claimed=%s", peer.virtualIP, heardInfo.SrcIP)
-			continue
-		}
-
-		log.Printf("📥 收到IP包 | 类型:%s | 来源:%s | 目标:%s | 真实地址:%s | 大小:%d",
-			heardInfo.ProtoName, heardInfo.SrcIP, heardInfo.DstIP, conn.RemoteAddr().String(), len(pkt))
-
-		// 广播/组播
-		if heardInfo.IsBroadcast {
-			broadcastPacket(&heardInfo, pkt)
-			continue
-		}
-
-		// 单播
-		clientKcpTable.RLock()
-		targetPeer, exists := clientKcpTable.m[heardInfo.DstIP]
-		clientKcpTable.RUnlock()
-
-		if !exists {
-			// 向外网转发流量
-			if err := writeToServerTun(pkt); err != nil {
-				log.Printf("⚠️ 外网转发失败(写入服务端TUN): %v", err)
-				continue
-			}
-
-			log.Printf("🌍 外网转发: %s -> %s", heardInfo.SrcIP, heardInfo.DstIP)
-			continue
-		}
-
-		targetPeer.mu.Lock()
-		err = writeFrame(targetPeer.conn, PacketTypeIP, pkt)
-		targetPeer.mu.Unlock()
-
-		if err != nil {
-			log.Printf("转发失败 [%s]: %v", heardInfo.DstIP, err)
-			continue
-		}
-
-		log.Printf("✅ 成功转发至: %s", heardInfo.DstIP)
 	}
 }
 
+// 清理连接
+func cleanupClientPeer(peer *ClientPeer) {
+	clientKcpTable.Lock()
+	for ip, p := range clientKcpTable.m {
+		if p == peer {
+			delete(clientKcpTable.m, ip)
+			log.Printf("🗑️ 清理客户端路由: %s", ip)
+		}
+	}
+	clientKcpTable.Unlock()
+
+	if serverDHCP != nil && peer.clientID != "" {
+		serverDHCP.Release(peer.clientID)
+		log.Printf("🧹 回收虚拟DHCP租约: clientID=%s", peer.clientID)
+	}
+
+	if err := peer.conn.Close(); err != nil {
+		log.Printf("🔌 客户端关闭失败: %v", err)
+		return
+	}
+
+	log.Printf("🔌 客户端已断开: %s", peer.conn.RemoteAddr().String())
+}
+
+// 处理Ping报文
+func handlePingPacket(peer *ClientPeer) bool {
+	peer.mu.Lock()
+	defer peer.mu.Unlock()
+
+	_ = peer.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+
+	if err := writeFrame(peer.conn, PacketTypePong, nil); err != nil {
+		log.Printf("PONG发送失败: %v", err)
+		return false
+	}
+
+	return true
+}
+
+// 处理VDHCP请求ip报文
 func handleVDHCPPacket(peer *ClientPeer, pkt []byte) bool {
 	if serverDHCP == nil {
+		log.Printf("忽略vdhcp报文: serverDHCP未启用")
 		return false
 	}
 
 	msg, err := vdhcp.DecodeMessage(pkt)
-	if err != nil || msg.Type != vdhcp.MessageTypeDiscover {
+	if err != nil {
+		log.Printf("忽略非法vdhcp报文: %v", err)
+		return false
+	}
+
+	if msg.Type != vdhcp.MessageTypeDiscover {
+		log.Printf("忽略非Discover的vdhcp报文: %v", msg.Type)
 		return false
 	}
 
 	ip, err := serverDHCP.Allocate(peer.clientID)
 	if err != nil {
 		nak, _ := vdhcp.EncodeNak(err.Error())
+
 		peer.mu.Lock()
 		_ = peer.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		_ = writeFrame(peer.conn, PacketTypeVDHCP, nak)
 		peer.mu.Unlock()
-		log.Printf("❌ vDHCP分配失败 [%s]: %v", peer.clientID, err)
+
+		log.Printf("❌ vdhcp分配失败 [%s]: %v", peer.clientID, err)
 		return true
 	}
 
 	offer, err := vdhcp.EncodeOffer(ip, serverDHCPMask, Conf.Common.Gateway)
 	if err != nil {
-		log.Printf("❌ vDHCP响应编码失败 [%s]: %v", peer.clientID, err)
+		log.Printf("❌ vdhcp响应编码失败 [%s]: %v", peer.clientID, err)
 		return true
 	}
 
@@ -308,17 +285,92 @@ func handleVDHCPPacket(peer *ClientPeer, pkt []byte) bool {
 	_ = peer.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	err = writeFrame(peer.conn, PacketTypeVDHCP, offer)
 	peer.mu.Unlock()
+
 	if err != nil {
-		log.Printf("❌ vDHCP响应发送失败 [%s]: %v", peer.clientID, err)
+		log.Printf("❌ vdhcp响应发送失败 [%s]: %v", peer.clientID, err)
 		return true
 	}
-	// 绑定ip到客户端
+
 	peer.virtualIP = ip
+
 	clientKcpTable.Lock()
 	clientKcpTable.m[ip] = peer
 	clientKcpTable.Unlock()
-	log.Printf("✅ vDHCP分配成功: clientID=%s ip=%s mask=%s", peer.clientID, ip, serverDHCPMask)
+
+	log.Printf("✅ vdhcp分配成功: clientID=%s ip=%s mask=%s", peer.clientID, ip, serverDHCPMask)
+
 	return true
+}
+
+// 处理转发一般IP报文
+func handleIPPacket(peer *ClientPeer, pkt []byte) {
+	heardInfo, err := headerParsing(pkt)
+	if err != nil {
+		log.Printf("包头解析错误，丢弃：%v", err)
+		return
+	}
+
+	if peer.virtualIP == "" {
+		log.Printf("丢弃未分配虚拟IP客户端的报文: claimed=%s", heardInfo.SrcIP)
+		return
+	}
+
+	// DHCP分配ip后防止伪造源IP
+	if heardInfo.SrcIP != peer.virtualIP {
+		log.Printf("丢弃伪造源IP包: real=%s claimed=%s", peer.virtualIP, heardInfo.SrcIP)
+		return
+	}
+
+	log.Printf(
+		"📥 收到IP包 | 类型:%s | 来源:%s | 目标:%s | 真实地址:%s | 大小:%d",
+		heardInfo.ProtoName,
+		heardInfo.SrcIP,
+		heardInfo.DstIP,
+		peer.conn.RemoteAddr().String(),
+		len(pkt),
+	)
+
+	// 广播/组播
+	if heardInfo.IsBroadcast {
+		broadcastPacket(&heardInfo, pkt)
+		return
+	}
+
+	// 单播：优先查虚拟客户端路由
+	clientKcpTable.RLock()
+	targetPeer, exists := clientKcpTable.m[heardInfo.DstIP]
+	clientKcpTable.RUnlock()
+
+	if !exists {
+		handleOutboundPacket(&heardInfo, pkt)
+		return
+	}
+
+	forwardPacketToPeer(targetPeer, heardInfo.DstIP, pkt)
+}
+
+// 向外网转发流量
+func handleOutboundPacket(heardInfo *IPHeaderInfo, pkt []byte) {
+	if err := writeToServerTun(pkt); err != nil {
+		log.Printf("⚠️ 外网转发失败(写入服务端TUN): %v", err)
+		return
+	}
+
+	log.Printf("🌍 外网转发: %s -> %s", heardInfo.SrcIP, heardInfo.DstIP)
+}
+
+// 客户端转发
+func forwardPacketToPeer(targetPeer *ClientPeer, dstIP string, pkt []byte) {
+	targetPeer.mu.Lock()
+	err := writeFrame(targetPeer.conn, PacketTypeIP, pkt)
+	targetPeer.mu.Unlock()
+
+	if err != nil {
+		log.Printf("转发失败 [%s]: %v", dstIP, err)
+		return
+	}
+
+	log.Printf("✅ 成功转发至: %s", dstIP)
 }
 
 func writeToServerTun(pkt []byte) error {
