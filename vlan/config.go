@@ -1,7 +1,9 @@
 package vlan
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"log"
 	"net"
 	"os"
@@ -89,4 +91,12 @@ func validateConfig() {
 func get32Key(s string) []byte {
 	sum := sha256.Sum256([]byte(s))
 	return sum[:]
+}
+
+func generateTunnelKey() (string, error) {
+	key := make([]byte, 32) // 32字节 = AES-256
+	if _, err := rand.Read(key); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(key), nil
 }

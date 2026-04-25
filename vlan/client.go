@@ -17,6 +17,7 @@ import (
 
 const (
 	heartbeatInterval  = 5 * time.Second
+	heartbeatFluctuate = 1 * time.Second
 	readTimeout        = 16 * time.Second
 	tunPacketQueueSize = 1024
 )
@@ -233,7 +234,7 @@ func tunToPacketQueue(dev tun.Device) {
 func clientSendLoop(conn net.Conn, kcpDone <-chan struct{}) {
 	log.Printf("▶ 启动：Queue → %s", Conf.Common.Mode)
 
-	ticker := time.NewTicker(heartbeatInterval)
+	ticker := time.NewTicker(RandomInterval(heartbeatInterval, heartbeatFluctuate))
 	defer ticker.Stop()
 
 	for {
