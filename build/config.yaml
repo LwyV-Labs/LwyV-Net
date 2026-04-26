@@ -4,6 +4,8 @@ common:
   privateKey: "eMCk80G94X4zuGNFMyfCPM7dZOiQbrCwR8q6G2i2zVk="
   # 对端设备长期公钥（base64 32 bytes）
   peerPublicKey: "pWCWz1rjlpgsvpLY6LQY9KcXaP7N9qSh5NAsNL7FzyI="
+  # 允许多个客户端公钥（服务端可选；与 peerPublicKey 并集生效）
+  peerPublicKeys: []
   mtu: 1250
   proxy: true
   gateway: "172.19.0.254"
