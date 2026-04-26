@@ -1,12 +1,16 @@
 package vlan
 
 import (
-	"NetworkSetup/secure"
+	"bytes"
+	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"log"
 	"net"
 	"os"
+
+	"NetworkSetup/secure"
 
 	"gopkg.in/yaml.v3"
 )
@@ -21,14 +25,14 @@ type Config struct {
 
 // CommonConfig 通用配置
 type CommonConfig struct {
-	PrivateKey    string `yaml:"privateKey"`
-	PeerPublicKey string `yaml:"peerPublicKey"`
-	Identity      secure.Identity
-	PeerStatic    []byte
-	MTU           int    `yaml:"mtu"`
-	Proxy         bool   `yaml:"proxy"`
-	Gateway       string `yaml:"gateway"`
-	SubnetMask    string `yaml:"subnetMask"`
+	PrivateKey    string          `yaml:"privateKey"`
+	PeerPublicKey string          `yaml:"peerPublicKey"`
+	Identity      secure.Identity `yaml:"-"`
+	PeerStatic    []byte          `yaml:"-"`
+	MTU           int             `yaml:"mtu"`
+	Proxy         bool            `yaml:"proxy"`
+	Gateway       string          `yaml:"gateway"`
+	SubnetMask    string          `yaml:"subnetMask"`
 }
 
 // ServerConfig 服务端配置
@@ -104,11 +108,180 @@ func validateConfig() {
 	}
 }
 
-func generateTunnelKey() (string, error) {
-	// 生成 32 字节随机密钥，并编码成 base64 字符串便于存储/传输。
-	key := make([]byte, 32) // 32字节 = AES-256
-	if _, err := rand.Read(key); err != nil {
+// GenerateAndWriteKeys 生成一组 Noise IK / ECDH 长期身份密钥，并写入配置文件。
+//
+// 注意：
+//   - privateKey 是“本机”的长期私钥，会自动写入 common.privateKey。
+//   - 返回值 publicKey 是“本机”的长期公钥，需要复制到对端配置的 common.peerPublicKey。
+//   - peerPublicKey 传空字符串时，不会覆盖配置中已有的 common.peerPublicKey。
+//   - peerPublicKey 非空时，会校验其为 base64 32 bytes，并写入 common.peerPublicKey。
+func GenerateAndWriteKeys(path string, peerPublicKey string) (publicKey string, err error) {
+	privateKey, publicKey, err := generateNoiseKeyPair()
+	if err != nil {
 		return "", err
 	}
-	return base64.StdEncoding.EncodeToString(key), nil
+
+	if err := validateBase64Key("generated privateKey", privateKey); err != nil {
+		return "", err
+	}
+	if err := validateBase64Key("generated publicKey", publicKey); err != nil {
+		return "", err
+	}
+	if peerPublicKey != "" {
+		if err := validateBase64Key("peerPublicKey", peerPublicKey); err != nil {
+			return "", err
+		}
+		if _, err := secure.ParsePublicKey(peerPublicKey); err != nil {
+			return "", fmt.Errorf("peerPublicKey非法: %w", err)
+		}
+	}
+
+	if err := writeKeysToConfig(path, privateKey, peerPublicKey); err != nil {
+		return "", err
+	}
+	return publicKey, nil
+}
+
+func WritePeerPublicKey(path string, peerPublicKey string) error {
+	if peerPublicKey == "" {
+		return fmt.Errorf("peerPublicKey不能为空")
+	}
+	if err := validateBase64Key("peerPublicKey", peerPublicKey); err != nil {
+		return err
+	}
+	if _, err := secure.ParsePublicKey(peerPublicKey); err != nil {
+		return fmt.Errorf("peerPublicKey非法: %w", err)
+	}
+	return writeKeysToConfig(path, "", peerPublicKey)
+}
+
+func generateNoiseKeyPair() (privateKey string, publicKey string, err error) {
+	// X25519 是 Noise IK / ECDH 常用的 32 字节 Curve25519 密钥。
+	private, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return "", "", err
+	}
+	return base64.StdEncoding.EncodeToString(private.Bytes()),
+		base64.StdEncoding.EncodeToString(private.PublicKey().Bytes()),
+		nil
+}
+
+func validateBase64Key(name string, value string) error {
+	raw, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return fmt.Errorf("%s不是合法base64: %w", name, err)
+	}
+	if len(raw) != 32 {
+		return fmt.Errorf("%s长度错误: got %d bytes, want 32 bytes", name, len(raw))
+	}
+	return nil
+}
+
+func writeKeysToConfig(path string, privateKey string, peerPublicKey string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("读取配置文件失败: %w", err)
+	}
+
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return fmt.Errorf("解析配置文件失败: %w", err)
+	}
+
+	rootMap, err := rootMappingNode(&root)
+	if err != nil {
+		return err
+	}
+	common, err := ensureMappingValue(rootMap, "common")
+	if err != nil {
+		return err
+	}
+
+	if privateKey != "" {
+		setStringValue(common, "privateKey", privateKey, "Noise IK / ECDH 身份密钥（base64 32 bytes）")
+	}
+	if peerPublicKey != "" {
+		setStringValue(common, "peerPublicKey", peerPublicKey, "对端设备长期公钥（base64 32 bytes）")
+	}
+
+	var buf bytes.Buffer
+	encoder := yaml.NewEncoder(&buf)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&root); err != nil {
+		_ = encoder.Close()
+		return fmt.Errorf("编码配置文件失败: %w", err)
+	}
+	if err := encoder.Close(); err != nil {
+		return fmt.Errorf("关闭YAML编码器失败: %w", err)
+	}
+
+	perm := os.FileMode(0644)
+	if info, err := os.Stat(path); err == nil {
+		perm = info.Mode().Perm()
+	}
+	if err := os.WriteFile(path, buf.Bytes(), perm); err != nil {
+		return fmt.Errorf("写入配置文件失败: %w", err)
+	}
+	return nil
+}
+
+func rootMappingNode(root *yaml.Node) (*yaml.Node, error) {
+	if root.Kind == 0 {
+		root.Kind = yaml.DocumentNode
+		root.Content = []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}
+	}
+	if root.Kind != yaml.DocumentNode {
+		return nil, fmt.Errorf("配置文件根节点必须是YAML文档")
+	}
+	if len(root.Content) == 0 {
+		root.Content = []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}
+	}
+	if root.Content[0].Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("配置文件根节点必须是map")
+	}
+	return root.Content[0], nil
+}
+
+func ensureMappingValue(mapping *yaml.Node, key string) (*yaml.Node, error) {
+	if mapping.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("节点%s的父级不是map", key)
+	}
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		keyNode := mapping.Content[i]
+		valueNode := mapping.Content[i+1]
+		if keyNode.Value != key {
+			continue
+		}
+		if valueNode.Kind != yaml.MappingNode {
+			return nil, fmt.Errorf("%s必须是map", key)
+		}
+		return valueNode, nil
+	}
+
+	keyNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}
+	valueNode := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	mapping.Content = append(mapping.Content, keyNode, valueNode)
+	return valueNode, nil
+}
+
+func setStringValue(mapping *yaml.Node, key string, value string, headComment string) {
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		keyNode := mapping.Content[i]
+		valueNode := mapping.Content[i+1]
+		if keyNode.Value != key {
+			continue
+		}
+		valueNode.Kind = yaml.ScalarNode
+		valueNode.Tag = "!!str"
+		valueNode.Value = value
+		valueNode.Style = yaml.DoubleQuotedStyle
+		return
+	}
+
+	keyNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}
+	if headComment != "" {
+		keyNode.HeadComment = headComment
+	}
+	valueNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value, Style: yaml.DoubleQuotedStyle}
+	mapping.Content = append(mapping.Content, keyNode, valueNode)
 }
