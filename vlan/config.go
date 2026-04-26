@@ -89,6 +89,10 @@ func validateConfig() {
 		if err != nil {
 			log.Fatalf("解析peerPublicKeys[%d]失败: %v", i, err)
 		}
+		if i == 0 {
+			// IK 作为发起方需要预先知道服务端静态公钥，这里约定使用列表首项。
+			Conf.Common.PeerStatic = append([]byte(nil), peer...)
+		}
 		if Conf.Common.PeerStaticSet == nil {
 			Conf.Common.PeerStaticSet = make(map[string]struct{})
 		}
