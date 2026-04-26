@@ -1,14 +1,13 @@
 package vlan
 
 import (
+	"NetworkSetup/secure"
 	"crypto/rand"
 	"encoding/base64"
 	"log"
 	"net"
 	"os"
-	"strings"
 
-	"NetworkSetup/vlan/secure"
 	"gopkg.in/yaml.v3"
 )
 
@@ -27,7 +26,6 @@ type CommonConfig struct {
 	Identity      secure.Identity
 	PeerStatic    []byte
 	MTU           int    `yaml:"mtu"`
-	Mode          string `yaml:"mode"`
 	Proxy         bool   `yaml:"proxy"`
 	Gateway       string `yaml:"gateway"`
 	SubnetMask    string `yaml:"subnetMask"`
@@ -104,8 +102,6 @@ func validateConfig() {
 	if _, err := maskToPrefix(Conf.Common.SubnetMask); err != nil {
 		log.Fatalf("非法子网掩码: %s, 错误: %v", Conf.Common.SubnetMask, err)
 	}
-	// 统一把协议模式转为大写，避免配置写成 tcp/kcp 导致不匹配。
-	Conf.Common.Mode = strings.ToUpper(Conf.Common.Mode)
 }
 
 func generateTunnelKey() (string, error) {

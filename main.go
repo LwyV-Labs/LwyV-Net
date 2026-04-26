@@ -20,10 +20,13 @@ func main() {
 	}
 
 	runType := os.Args[1]
-	if runType == "server" {
+	switch runType {
+	case "server":
 		// 显式服务端模式：./程序名 server
 		vlan.StartServer()
-	} else {
+	case "client":
+		vlan.StartClient()
+	default:
 		// 任何其它参数都视为非法，直接退出并给出提示。
 		log.Fatal(runType + " is not a valid runType")
 	}

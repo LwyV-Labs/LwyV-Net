@@ -1,11 +1,10 @@
 # 通用配置
 common:
   # Noise IK / ECDH 身份密钥（base64 32 bytes）
-  privateKey: "REPLACE_WITH_LOCAL_PRIVATE_KEY_BASE64"
+  privateKey: "eMCk80G94X4zuGNFMyfCPM7dZOiQbrCwR8q6G2i2zVk="
   # 对端设备长期公钥（base64 32 bytes）
-  peerPublicKey: "REPLACE_WITH_PEER_PUBLIC_KEY_BASE64"
+  peerPublicKey: "pWCWz1rjlpgsvpLY6LQY9KcXaP7N9qSh5NAsNL7FzyI="
   mtu: 1250
-  mode: "kcp"
   proxy: true
   gateway: "172.19.0.254"
   subnetMask: "255.255.255.0"

@@ -1,6 +1,7 @@
 package vlan
 
 import (
+	"NetworkSetup/secure"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -13,7 +14,7 @@ import (
 	"time"
 
 	"NetworkSetup/vdhcp"
-	"NetworkSetup/vlan/secure"
+
 	kcp "github.com/xtaci/kcp-go/v5"
 	"golang.zx2c4.com/wireguard/tun"
 )
@@ -66,17 +67,7 @@ func (s *Server) Start() {
 	}
 	s.installCleanupSignal()
 
-	switch Conf.Common.Mode {
-	case "TCP":
-		s.startTCP()
-	case "KCP":
-		s.startKCP()
-	case "ALL":
-		go s.startTCP()
-		s.startKCP()
-	default:
-		log.Fatalf("{%s}不支持类型", Conf.Common.Mode)
-	}
+	s.startKCP()
 }
 
 func (s *Server) installCleanupSignal() {
@@ -131,23 +122,6 @@ func (s *Server) initGateway() error {
 	go s.tunToClients(dev)
 	log.Printf("✅ 服务端网关已启用: if=%s gw=%s/%s", ifName, Conf.Common.Gateway, mask)
 	return nil
-}
-
-func (s *Server) startTCP() {
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", Conf.Server.Port))
-	if err != nil {
-		log.Fatalf("服务端启动失败: %v", err)
-	}
-	defer listener.Close()
-	log.Printf("✅ TCP 服务端启动成功，监听 :%d", Conf.Server.Port)
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Printf("接受连接失败: %v", err)
-			continue
-		}
-		go s.handleClient(conn)
-	}
 }
 
 func (s *Server) startKCP() {

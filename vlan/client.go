@@ -1,6 +1,7 @@
 package vlan
 
 import (
+	"NetworkSetup/secure"
 	"fmt"
 	"log"
 	"net"
@@ -11,7 +12,7 @@ import (
 	"time"
 
 	"NetworkSetup/vdhcp"
-	"NetworkSetup/vlan/secure"
+
 	kcp "github.com/xtaci/kcp-go/v5"
 	"golang.zx2c4.com/wireguard/tun"
 )
@@ -46,19 +47,13 @@ func (c *Client) Start() {
 	_ = allowTunTraffic(Conf.Client.IfName)
 	defer cleanupTunTraffic()
 	defer cleanupClientProxyRouting()
+
 	c.installCleanupSignal()
+
 	go c.tunToPacketQueue(dev)
 
-	switch Conf.Common.Mode {
-	case "TCP":
-		// TCP 模式：稳定、易调试。
-		c.startTCP(dev)
-	case "KCP":
-		// KCP 模式：基于 UDP，通常时延更低。
-		c.startKCP(dev)
-	default:
-		log.Fatalf("不支持类型: %s", Conf.Common.Mode)
-	}
+	c.startKCP(dev)
+
 }
 
 func (c *Client) installCleanupSignal() {
@@ -70,18 +65,6 @@ func (c *Client) installCleanupSignal() {
 		cleanupTunTraffic()
 		os.Exit(0)
 	}()
-}
-
-func (c *Client) startTCP(dev tun.Device) {
-	for {
-		// 断线自动重连。
-		conn, err := net.DialTimeout("tcp", Conf.Client.ServerIP, 5*time.Second)
-		if err != nil {
-			time.Sleep(time.Second)
-			continue
-		}
-		c.runSession(dev, conn)
-	}
 }
 
 func (c *Client) startKCP(dev tun.Device) {
