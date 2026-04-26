@@ -23,12 +23,12 @@ type IPHeaderInfo struct {
 func headerParsing(pkt []byte) (IPHeaderInfo, error) {
 	var info IPHeaderInfo
 
-	// IPv4 最短头部 20 字节
+	// IPv4 最短头部长度是 20 字节；比这更短的一定是坏包。
 	if len(pkt) < 20 {
 		return info, fmt.Errorf("收到过短IP包，丢弃: %d bytes, 需要至少 20 bytes", len(pkt))
 	}
 
-	// 高4位是版本号，低4位是首部长度（单位是4字节）
+	// 第 1 字节：高4位=版本，低4位=IHL(头长度，单位 4 字节)。
 	version := pkt[0] >> 4
 
 	if version != 4 {
@@ -59,12 +59,15 @@ func isBroadcastIP(ip []byte) bool {
 	if len(ip) != 4 {
 		return false
 	}
+	// 255.255.255.255：全局广播
 	if ip[0] == 0xff && ip[1] == 0xff && ip[2] == 0xff && ip[3] == 0xff {
 		return true
 	}
+	// 子网定向广播（例如 192.168.1.255）
 	if isSubnetBroadcast(ip, Conf.Common.Gateway, Conf.Common.SubnetMask) {
 		return true
 	}
+	// 224.0.0.0 ~ 239.255.255.255：组播地址，按广播型流量处理。
 	if ip[0] >= 224 && ip[0] <= 239 {
 		return true
 	}
@@ -72,6 +75,7 @@ func isBroadcastIP(ip []byte) bool {
 }
 
 func isSubnetBroadcast(dst []byte, gateway, mask string) bool {
+	// 利用网关+掩码算出当前子网的广播地址，再和目标地址比较。
 	gw := net.ParseIP(gateway).To4()
 	m := net.ParseIP(mask).To4()
 	if gw == nil || m == nil || len(dst) != 4 {
@@ -98,6 +102,7 @@ func protoName(proto byte) string {
 }
 
 func maskToPrefix(mask string) (int, error) {
+	// 把点分十进制掩码（255.255.255.0）转成前缀长度（24）。
 	ip := net.ParseIP(mask).To4()
 	if ip == nil {
 		return 0, fmt.Errorf("非法子网掩码: %s", mask)
@@ -131,6 +136,10 @@ type TunnelFrame struct {
 
 // setupKCPSession设置KCP
 func setupKCPSession(conn *kcp.UDPSession) {
+	// 这里是 KCP 的“低延迟”参数组：
+	// - 关闭写延迟
+	// - nodelay 模式
+	// - 增大窗口和缓冲，减少高吞吐时丢包影响
 	conn.SetWriteDelay(false)
 	conn.SetNoDelay(1, 20, 2, 1)
 	conn.SetWindowSize(1024, 1024)
@@ -142,6 +151,8 @@ func setupKCPSession(conn *kcp.UDPSession) {
 
 // readPacket 读包
 func readFrame(conn net.Conn, maxPayloadSize int) (*TunnelFrame, error) {
+	// 协议格式：
+	// [4字节长度][1字节Type][N字节Payload]
 	lenBuf := make([]byte, 4)
 	if _, err := io.ReadFull(conn, lenBuf); err != nil {
 		return nil, err
@@ -159,6 +170,7 @@ func readFrame(conn net.Conn, maxPayloadSize int) (*TunnelFrame, error) {
 
 	payload := raw[1:]
 	frame := &TunnelFrame{
+		// Length 只记录业务负载长度，不包含 Type 字节。
 		Length:   uint32(len(payload)),
 		Type:     PacketType(raw[0]),
 		IPPacket: payload,
@@ -168,12 +180,14 @@ func readFrame(conn net.Conn, maxPayloadSize int) (*TunnelFrame, error) {
 
 // writePacket 写包
 func writeFrame(conn net.Conn, packetType PacketType, payload []byte) error {
+	// 和 readFrame 对应，先写总长度，再写 type 和 payload。
 	frameLen := 1 + len(payload)
 	buf := make([]byte, 4+frameLen)
 	binary.BigEndian.PutUint32(buf[:4], uint32(frameLen))
 	buf[4] = byte(packetType)
 	copy(buf[5:], payload)
 
+	// net.Conn.Write 可能只写入部分字节，所以循环直到写完。
 	for len(buf) > 0 {
 		n, err := conn.Write(buf)
 		if err != nil {
@@ -185,6 +199,7 @@ func writeFrame(conn net.Conn, packetType PacketType, payload []byte) error {
 }
 
 func maxFramePayload() int {
+	// 为加密头/控制字段预留额外空间，避免边界溢出。
 	return Conf.Common.MTU + 128
 }
 
@@ -192,6 +207,7 @@ func maxFramePayload() int {
 
 // writeToTun 写网卡
 func writeToTun(dev tun.Device, pkt []byte) error {
+	// WireGuard 的 tun.Device 写入通常需要预留 offset。
 	buf := make([]byte, tunWriteOffset+len(pkt))
 	copy(buf[tunWriteOffset:], pkt)
 
@@ -200,6 +216,7 @@ func writeToTun(dev tun.Device, pkt []byte) error {
 }
 
 func readFromTun(dev tun.Device, mtu int) ([][]byte, error) {
+	// BatchSize 表示底层驱动建议一次读取多少包，能减少系统调用次数。
 	batchSize := dev.BatchSize()
 	if batchSize < 1 {
 		batchSize = 1
@@ -216,6 +233,7 @@ func readFromTun(dev tun.Device, mtu int) ([][]byte, error) {
 		return nil, err
 	}
 
+	// 从复用 buffer 中拷贝出独立切片，避免后续被下一次 Read 覆盖。
 	packets := make([][]byte, 0, n)
 	for i := 0; i < n; i++ {
 		if sizes[i] <= 0 || sizes[i] > len(bufs[i]) {

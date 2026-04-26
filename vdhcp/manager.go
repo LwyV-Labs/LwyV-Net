@@ -7,9 +7,12 @@ import (
 )
 
 type Manager struct {
-	mu           sync.Mutex
-	pool         []string
-	leaseByID    map[string]string
+	mu sync.Mutex
+	// pool: 可分配地址池（按 startIP~endIP 顺序生成）。
+	pool []string
+	// leaseByID: clientID -> IP
+	leaseByID map[string]string
+	// leaseOwnerBy: IP -> clientID（用于快速判断占用）
 	leaseOwnerBy map[string]string
 }
 
@@ -42,10 +45,12 @@ func (m *Manager) Allocate(clientID string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// 同一个 clientID 重复申请，返回历史租约（幂等）。
 	if ip, ok := m.leaseByID[clientID]; ok {
 		return ip, nil
 	}
 
+	// 线性扫描池，找到第一个未占用 IP。
 	for _, ip := range m.pool {
 		if _, used := m.leaseOwnerBy[ip]; used {
 			continue
@@ -65,6 +70,7 @@ func (m *Manager) Release(clientID string) {
 	if !ok {
 		return
 	}
+	// 双向索引都要删除，避免“脏租约”。
 	delete(m.leaseByID, clientID)
 	delete(m.leaseOwnerBy, ip)
 }

@@ -12,6 +12,7 @@ const (
 )
 
 type Message struct {
+	// Type: DISCOVER / OFFER / NAK
 	Type       string `json:"type"`
 	IP         string `json:"ip,omitempty"`
 	SubnetMask string `json:"subnetMask,omitempty"`
@@ -32,6 +33,7 @@ func EncodeNak(reason string) ([]byte, error) {
 }
 
 func DecodeMessage(pkt []byte) (Message, error) {
+	// 注意：这里只做格式校验，不做字段语义（由调用方判断类型和必填字段）。
 	var msg Message
 	if err := json.Unmarshal(pkt, &msg); err != nil {
 		return msg, err
