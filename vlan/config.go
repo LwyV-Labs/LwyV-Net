@@ -25,14 +25,16 @@ type Config struct {
 
 // CommonConfig 通用配置
 type CommonConfig struct {
-	PrivateKey    string          `yaml:"privateKey"`
-	PeerPublicKey string          `yaml:"peerPublicKey"`
-	Identity      secure.Identity `yaml:"-"`
-	PeerStatic    []byte          `yaml:"-"`
-	MTU           int             `yaml:"mtu"`
-	Proxy         bool            `yaml:"proxy"`
-	Gateway       string          `yaml:"gateway"`
-	SubnetMask    string          `yaml:"subnetMask"`
+	PrivateKey     string              `yaml:"privateKey"`
+	PeerPublicKey  string              `yaml:"peerPublicKey"`
+	PeerPublicKeys []string            `yaml:"peerPublicKeys"`
+	Identity       secure.Identity     `yaml:"-"`
+	PeerStatic     []byte              `yaml:"-"`
+	PeerStaticSet  map[string]struct{} `yaml:"-"`
+	MTU            int                 `yaml:"mtu"`
+	Proxy          bool                `yaml:"proxy"`
+	Gateway        string              `yaml:"gateway"`
+	SubnetMask     string              `yaml:"subnetMask"`
 }
 
 // ServerConfig 服务端配置
@@ -89,6 +91,20 @@ func validateConfig() {
 			log.Fatalf("解析peerPublicKey失败: %v", err)
 		}
 		Conf.Common.PeerStatic = peer
+		if Conf.Common.PeerStaticSet == nil {
+			Conf.Common.PeerStaticSet = make(map[string]struct{})
+		}
+		Conf.Common.PeerStaticSet[string(peer)] = struct{}{}
+	}
+	for i, key := range Conf.Common.PeerPublicKeys {
+		peer, err := secure.ParsePublicKey(key)
+		if err != nil {
+			log.Fatalf("解析peerPublicKeys[%d]失败: %v", i, err)
+		}
+		if Conf.Common.PeerStaticSet == nil {
+			Conf.Common.PeerStaticSet = make(map[string]struct{})
+		}
+		Conf.Common.PeerStaticSet[string(peer)] = struct{}{}
 	}
 
 	// 端口属于高风险配置，先做范围检查。

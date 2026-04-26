@@ -340,12 +340,24 @@ func (s *Server) performHandshake(peer *ClientPeer, initMsg []byte) error {
 		log.Printf("客户端认证失败: remote=%s localKeyID=%d err=%v", peer.conn.RemoteAddr(), keyID, err)
 		return err
 	}
+	if !isPeerStaticAllowed(remotePub) {
+		return fmt.Errorf("peer public key not allowed")
+	}
 	peer.peerPublicKey = base64.StdEncoding.EncodeToString(remotePub)
 	peer.deviceID = secure.DeviceIDFromPublicKey(remotePub)
 	// 用新会话替换旧会话，实现平滑轮转。
 	peer.session.Rotate(session)
 	log.Printf("客户端认证通过: remote=%s device=%s", peer.conn.RemoteAddr(), peer.deviceID)
 	return nil
+}
+
+func isPeerStaticAllowed(remotePub []byte) bool {
+	allowed := Conf.Common.PeerStaticSet
+	if len(allowed) == 0 {
+		return true
+	}
+	_, ok := allowed[string(remotePub)]
+	return ok
 }
 
 func (s *Server) writeToServerTun(pkt []byte) error {

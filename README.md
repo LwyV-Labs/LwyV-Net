@@ -105,7 +105,7 @@ TCP / KCP 隧道
 
 服务端（Responder）：
 1. 接收并解析客户端 `clientEphPub + clientStaticPub`；
-2. （可选）若配置了 `peerPublicKey`，校验是否为允许的对端静态公钥；
+2. （可选）若配置了 `peerPublicKey` 或 `peerPublicKeys`，校验是否为允许的对端静态公钥（白名单）；
 3. 生成自己的临时密钥并回传 `serverEphPub`；
 4. 同样计算 `es`、`se`、`ee`。
 
