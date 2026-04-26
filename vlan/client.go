@@ -6,11 +6,12 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"NetworkSetup/vdhcp"
-
+	"NetworkSetup/vlan/secure"
 	kcp "github.com/xtaci/kcp-go/v5"
 	"golang.zx2c4.com/wireguard/tun"
 )
@@ -22,270 +23,224 @@ const (
 	tunPacketQueueSize = 1024
 )
 
-var (
-	tunPacketChan = make(chan []byte, tunPacketQueueSize)
-)
+type Client struct {
+	tunPacketChan chan []byte
+	keyID         atomic.Uint32
+}
 
-func StartClient() {
+func NewClient() *Client {
+	return &Client{tunPacketChan: make(chan []byte, tunPacketQueueSize)}
+}
+
+func StartClient() { NewClient().Start() }
+
+func (c *Client) Start() {
 	dev, err := createTun(Conf.Client.IfName, Conf.Common.MTU)
 	if err != nil {
 		log.Fatalf("创建虚拟网卡失败: %v", err)
 	}
 	defer dev.Close()
-
-	if err := allowTunTraffic(Conf.Client.IfName); err != nil {
-		log.Printf("放行虚拟网卡流量失败: %v", err)
-	}
-
+	_ = allowTunTraffic(Conf.Client.IfName)
 	defer cleanupTunTraffic()
 	defer cleanupClientProxyRouting()
-	installClientCleanupSignal()
+	c.installCleanupSignal()
+	go c.tunToPacketQueue(dev)
 
-	go tunToPacketQueue(dev)
-
-	if Conf.Common.Mode == "TCP" {
-		startTCPClient(dev)
-	} else if Conf.Common.Mode == "KCP" {
-		startKCPClient(dev)
-	} else {
+	switch Conf.Common.Mode {
+	case "TCP":
+		c.startTCP(dev)
+	case "KCP":
+		c.startKCP(dev)
+	default:
 		log.Fatalf("不支持类型: %s", Conf.Common.Mode)
 	}
 }
 
-func installClientCleanupSignal() {
+func (c *Client) installCleanupSignal() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
-
 	go func() {
 		<-ch
-		log.Println("收到退出信号，开始清理客户端路由...")
-
 		cleanupClientProxyRouting()
 		cleanupTunTraffic()
-
 		os.Exit(0)
 	}()
 }
 
-func startTCPClient(dev tun.Device) {
+func (c *Client) startTCP(dev tun.Device) {
 	for {
 		conn, err := net.DialTimeout("tcp", Conf.Client.ServerIP, 5*time.Second)
 		if err != nil {
-			log.Printf("连接失败: %v", err)
-			time.Sleep(1 * time.Second)
+			time.Sleep(time.Second)
 			continue
 		}
-		log.Printf("✅ 已连接服务端: %s", Conf.Client.ServerIP)
-
-		if err = initClientAddress(conn); err != nil {
-			log.Printf("客户端地址初始化失败: %v", err)
-			_ = conn.Close()
-			time.Sleep(1 * time.Second)
-			continue
-		}
-
-		// TCP -> TUN 单独运行；一旦它退出，说明当前TCP连接不可用，需要重连。
-		tcpDone := make(chan struct{})
-		go func() {
-			defer close(tcpDone)
-			connToTun(dev, conn)
-		}()
-
-		// TCP连接期间，把TUN队列中的包发送到TCP。
-		clientSendLoop(conn, tcpDone)
-
-		_ = conn.Close()
-
-		// 每次断线都清理默认路由，避免下次重连时默认路由还指向 TUN
-		cleanupClientProxyRouting()
-		log.Println("连接断开，准备重连...")
+		c.runSession(dev, conn)
 	}
 }
 
-func startKCPClient(dev tun.Device) {
-
-	block, err := kcp.NewAESGCMCrypt(Conf.Common.Key)
-	if err != nil {
-		log.Fatalf("KCP AES-GCM 初始化失败: %v", err)
-	}
-
+func (c *Client) startKCP(dev tun.Device) {
 	for {
-		conn, err := kcp.DialWithOptions(Conf.Client.ServerIP, block, 0, 0)
+		conn, err := kcp.DialWithOptions(Conf.Client.ServerIP, nil, 0, 0)
 		if err != nil {
-			log.Printf("KCP连接失败: %v", err)
-			time.Sleep(1 * time.Second)
+			time.Sleep(time.Second)
 			continue
 		}
 		setupKCPSession(conn)
-
-		log.Printf("✅ 已连接KCP服务端: %s", Conf.Client.ServerIP)
-
-		if err = initClientAddress(conn); err != nil {
-			log.Printf("客户端地址初始化失败: %v", err)
-			_ = conn.Close()
-			time.Sleep(1 * time.Second)
-			continue
-		}
-
-		// KCP -> TUN 单独运行；一旦它退出，说明当前KCP连接不可用，需要重连。
-		kcpDone := make(chan struct{})
-		go func() {
-			defer close(kcpDone)
-			connToTun(dev, conn)
-		}()
-
-		// KCP连接期间，把TUN队列中的包发送到KCP。
-		clientSendLoop(conn, kcpDone)
-
-		_ = conn.Close()
-
-		// 每次断线都清理默认路由，避免下次重连时默认路由还指向 TUN
-		cleanupClientProxyRouting()
-		log.Println("连接断开，准备重连...")
+		c.runSession(dev, conn)
 	}
 }
 
-func initClientAddress(conn net.Conn) error {
-	dhcpIP, dhcpMask, err := requestVDHCP(conn)
+func (c *Client) runSession(dev tun.Device, conn net.Conn) {
+	sessionMgr := &secure.SessionManager{}
+	if err := c.performHandshake(conn, sessionMgr); err != nil {
+		_ = conn.Close()
+		return
+	}
+	if err := c.initAddress(conn, sessionMgr); err != nil {
+		_ = conn.Close()
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.connToTun(dev, conn, sessionMgr)
+	}()
+	c.clientSendLoop(conn, done, sessionMgr)
+	_ = conn.Close()
+	cleanupClientProxyRouting()
+}
+
+func (c *Client) initAddress(conn net.Conn, sessionMgr *secure.SessionManager) error {
+	dhcpIP, dhcpMask, err := c.requestVDHCP(conn, sessionMgr)
 	if err != nil {
 		return err
 	}
-	ip := dhcpIP
-	mask := dhcpMask
-
-	if err := configureTunAddress(Conf.Client.IfName, ip, mask); err != nil {
+	if err = configureTunAddress(Conf.Client.IfName, dhcpIP, dhcpMask); err != nil {
 		return fmt.Errorf("配置虚拟网卡 IP 失败: %w", err)
 	}
-	log.Printf("✅ 客户端地址已配置: %s/%s", ip, mask)
-
 	if Conf.Common.Proxy {
-		if err := setupClientProxyRouting(
-			Conf.Client.ServerIP,
-			Conf.Client.IfName,
-			Conf.Common.Gateway,
-		); err != nil {
+		if err = setupClientProxyRouting(Conf.Client.ServerIP, Conf.Client.IfName, Conf.Common.Gateway); err != nil {
 			return fmt.Errorf("客户端代理路由初始化失败: %w", err)
 		}
 	}
-
 	return nil
 }
 
-func requestVDHCP(conn net.Conn) (string, string, error) {
+func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) (string, string, error) {
 	discover, err := vdhcp.EncodeDiscover()
 	if err != nil {
 		return "", "", err
 	}
-
-	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if err = writeFrame(conn, PacketTypeVDHCP, discover); err != nil {
-		return "", "", fmt.Errorf("发送DHCP DISCOVER失败: %w", err)
+	if err = c.writeSecureFrame(conn, sessionMgr, PacketTypeVDHCP, discover); err != nil {
+		return "", "", err
 	}
-
-	_ = conn.SetReadDeadline(time.Now().Add(8 * time.Second))
-	frame, err := readFrame(conn, Conf.Common.MTU)
-	if err != nil {
-		return "", "", fmt.Errorf("读取DHCP OFFER失败: %w", err)
+	frame, err := readFrame(conn, maxFramePayload())
+	if err != nil || frame.Type != PacketTypeSecure {
+		return "", "", fmt.Errorf("读取DHCP OFFER失败")
 	}
-	_ = conn.SetReadDeadline(time.Time{})
-	if frame.Type != PacketTypeVDHCP {
-		return "", "", fmt.Errorf("unexpected DHCP frame type: %d", frame.Type)
+	innerType, plain, err := sessionMgr.Decrypt(frame.IPPacket)
+	if err != nil || PacketType(innerType) != PacketTypeVDHCP {
+		return "", "", fmt.Errorf("解密DHCP OFFER失败")
 	}
-
-	msg, err := vdhcp.DecodeMessage(frame.IPPacket)
-	if err != nil {
-		return "", "", fmt.Errorf("解析DHCP OFFER失败: %w", err)
+	msg, err := vdhcp.DecodeMessage(plain)
+	if err != nil || msg.Type != vdhcp.MessageTypeOffer || msg.IP == "" || msg.SubnetMask == "" {
+		return "", "", fmt.Errorf("解析DHCP OFFER失败")
 	}
-
-	if msg.Type == vdhcp.MessageTypeNak {
-		return "", "", fmt.Errorf("DHCP NAK: %s", msg.Reason)
-	}
-	if msg.Type != vdhcp.MessageTypeOffer {
-		return "", "", fmt.Errorf("unexpected DHCP message type: %s", msg.Type)
-	}
-	if msg.IP == "" || msg.SubnetMask == "" {
-		return "", "", fmt.Errorf("DHCP OFFER缺少IP或子网掩码")
-	}
-
-	log.Printf("✅ 收到V-DHCP地址: %s/%s", msg.IP, msg.SubnetMask)
 	return msg.IP, msg.SubnetMask, nil
 }
 
-// tunToPacketQueue TUN -> packet queue
-func tunToPacketQueue(dev tun.Device) {
-
-	log.Printf("▶ 启动：TUN → Queue")
-
+func (c *Client) tunToPacketQueue(dev tun.Device) {
 	for {
 		packets, err := readFromTun(dev, Conf.Common.MTU)
 		if err != nil {
-			log.Printf("TUN读取失败: %v", err)
 			return
 		}
-
 		for _, pkt := range packets {
 			select {
-			case tunPacketChan <- pkt:
+			case c.tunPacketChan <- pkt:
 			default:
-				log.Printf("TUN发送队列已满，丢弃IP包: %d bytes", len(pkt))
 			}
 		}
 	}
 }
 
-// clientSendLoop Queue -> conn(KCP,TCP)
-func clientSendLoop(conn net.Conn, kcpDone <-chan struct{}) {
-	log.Printf("▶ 启动：Queue → %s", Conf.Common.Mode)
-
+func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr *secure.SessionManager) {
 	ticker := time.NewTicker(RandomInterval(heartbeatInterval, heartbeatFluctuate))
 	defer ticker.Stop()
-
 	for {
 		select {
-		case <-kcpDone:
+		case <-done:
 			return
-
 		case <-ticker.C:
-			_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			if err := writeFrame(conn, PacketTypePing, nil); err != nil {
-				log.Printf("%s心跳发送失败: %v", Conf.Common.Mode, err)
 				return
 			}
-
-		case pkt := <-tunPacketChan:
-			_ = conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			if err := writeFrame(conn, PacketTypeIP, pkt); err != nil {
-				log.Printf("%s发送失败: %v", Conf.Common.Mode, err)
+		case pkt := <-c.tunPacketChan:
+			if err := c.writeSecureFrame(conn, sessionMgr, PacketTypeIP, pkt); err != nil {
 				return
 			}
 		}
 	}
 }
 
-// connToTun conn(KCP,TCP) -> TUN
-func connToTun(dev tun.Device, conn net.Conn) {
-	log.Printf("▶ 启动：%s → Queue", Conf.Common.Mode)
+func (c *Client) connToTun(dev tun.Device, conn net.Conn, sessionMgr *secure.SessionManager) {
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
-
-		// 接收包
-		frame, err := readFrame(conn, Conf.Common.MTU)
+		frame, err := readFrame(conn, maxFramePayload())
 		if err != nil {
-			log.Printf("%s接收失败: %v", Conf.Common.Mode, err)
 			return
 		}
 		if frame.Type == PacketTypePong {
 			continue
 		}
-		if frame.Type != PacketTypeIP {
-			log.Printf("忽略未知报文类型: %d", frame.Type)
+		if frame.Type != PacketTypeSecure {
 			continue
 		}
-		// 写入TUN设备数据
-		err = writeToTun(dev, frame.IPPacket)
-		if err != nil {
-			log.Printf("TUN写入失败: %v", err)
+		innerType, plain, err := sessionMgr.Decrypt(frame.IPPacket)
+		if err != nil || PacketType(innerType) != PacketTypeIP {
+			continue
+		}
+		if err = writeToTun(dev, plain); err != nil {
 			return
 		}
 	}
+}
+
+func (c *Client) writeSecureFrame(conn net.Conn, sessionMgr *secure.SessionManager, packetType PacketType, payload []byte) error {
+	s := sessionMgr.Current()
+	if s == nil {
+		return fmt.Errorf("no active session")
+	}
+	sealed, err := s.Encrypt(byte(packetType), payload)
+	if err != nil {
+		return err
+	}
+	return writeFrame(conn, PacketTypeSecure, sealed)
+}
+
+func (c *Client) performHandshake(conn net.Conn, sessionMgr *secure.SessionManager) error {
+	if len(Conf.Common.Identity.Private) == 0 {
+		return fmt.Errorf("common.privateKey is required")
+	}
+	hs := secure.NewHandshaker(Conf.Common.Identity, Conf.Common.PeerStatic)
+	keyID := c.keyID.Add(1)
+	session, err := hs.InitiatorHandshake(
+		func(msg []byte) error { return writeFrame(conn, PacketTypeHandshakeInit, msg) },
+		func() ([]byte, error) {
+			frame, err := readFrame(conn, secure.MaxHandshakeMsgSize)
+			if err != nil {
+				return nil, err
+			}
+			if frame.Type != PacketTypeHandshakeResp {
+				return nil, fmt.Errorf("unexpected handshake frame type=%d", frame.Type)
+			}
+			return frame.IPPacket, nil
+		},
+		keyID,
+	)
+	if err != nil {
+		return err
+	}
+	sessionMgr.Rotate(session)
+	return nil
 }

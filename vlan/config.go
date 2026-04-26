@@ -2,13 +2,13 @@ package vlan
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"log"
 	"net"
 	"os"
 	"strings"
 
+	"NetworkSetup/vlan/secure"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,13 +22,15 @@ type Config struct {
 
 // CommonConfig 通用配置
 type CommonConfig struct {
-	Password   string `yaml:"password"`
-	Key        []byte
-	MTU        int    `yaml:"mtu"`
-	Mode       string `yaml:"mode"`
-	Proxy      bool   `yaml:"proxy"`
-	Gateway    string `yaml:"gateway"`
-	SubnetMask string `yaml:"subnetMask"`
+	PrivateKey    string `yaml:"privateKey"`
+	PeerPublicKey string `yaml:"peerPublicKey"`
+	Identity      secure.Identity
+	PeerStatic    []byte
+	MTU           int    `yaml:"mtu"`
+	Mode          string `yaml:"mode"`
+	Proxy         bool   `yaml:"proxy"`
+	Gateway       string `yaml:"gateway"`
+	SubnetMask    string `yaml:"subnetMask"`
 }
 
 // ServerConfig 服务端配置
@@ -69,7 +71,20 @@ func InitConfig(path string) {
 }
 
 func validateConfig() {
-	Conf.Common.Key = get32Key(Conf.Common.Password)
+	if Conf.Common.PrivateKey != "" {
+		identity, err := secure.ParsePrivateKey(Conf.Common.PrivateKey)
+		if err != nil {
+			log.Fatalf("解析privateKey失败: %v", err)
+		}
+		Conf.Common.Identity = identity
+	}
+	if Conf.Common.PeerPublicKey != "" {
+		peer, err := secure.ParsePublicKey(Conf.Common.PeerPublicKey)
+		if err != nil {
+			log.Fatalf("解析peerPublicKey失败: %v", err)
+		}
+		Conf.Common.PeerStatic = peer
+	}
 
 	if Conf.Server.Port <= 0 || Conf.Server.Port > 65535 {
 		log.Fatalf("非法服务端端口: %d", Conf.Server.Port)
@@ -86,11 +101,6 @@ func validateConfig() {
 		log.Fatalf("非法子网掩码: %s, 错误: %v", Conf.Common.SubnetMask, err)
 	}
 	Conf.Common.Mode = strings.ToUpper(Conf.Common.Mode)
-}
-
-func get32Key(s string) []byte {
-	sum := sha256.Sum256([]byte(s))
-	return sum[:]
 }
 
 func generateTunnelKey() (string, error) {
