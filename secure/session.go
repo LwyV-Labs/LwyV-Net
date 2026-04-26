@@ -178,7 +178,12 @@ func (h *Handshaker) InitiatorHandshake(writeMsg func([]byte) error, readMsg fun
 	if err != nil {
 		return nil, err
 	}
-	msg1 := append(append([]byte{}, ephPub...), h.identity.Public...)
+	msg1 := make([]byte, 0, 68)
+	keyIDBuf := make([]byte, 4)
+	binary.BigEndian.PutUint32(keyIDBuf, keyID)
+	msg1 = append(msg1, keyIDBuf...)
+	msg1 = append(msg1, ephPub...)
+	msg1 = append(msg1, h.identity.Public...)
 	if err = writeMsg(msg1); err != nil {
 		return nil, err
 	}
@@ -214,7 +219,12 @@ func (h *Handshaker) ResponderHandshake(writeMsg func([]byte) error, readMsg fun
 	if len(msg1) < 64 {
 		return nil, nil, fmt.Errorf("invalid handshake init")
 	}
-	clientEphPub, clientStatic := msg1[:32], msg1[32:64]
+	offset := 0
+	if len(msg1) >= 68 {
+		keyID = binary.BigEndian.Uint32(msg1[:4])
+		offset = 4
+	}
+	clientEphPub, clientStatic := msg1[offset:offset+32], msg1[offset+32:offset+64]
 	if h.peerStatic != nil && len(h.peerStatic) == 32 && string(clientStatic) != string(h.peerStatic) {
 		return nil, nil, fmt.Errorf("peer public key not allowed")
 	}
