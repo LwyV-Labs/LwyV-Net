@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log"
 	"net"
 
 	"github.com/xtaci/kcp-go/v5"
@@ -98,29 +97,6 @@ func protoName(proto byte) string {
 	}
 }
 
-// 广播数据
-func broadcastPacket(heardInfo *IPHeaderInfo, pkt []byte) {
-	var targets = make(map[string]*ClientPeer)
-
-	clientKcpTable.RLock()
-	for ip, targetPeer := range clientKcpTable.m {
-		if ip == heardInfo.SrcIP {
-			continue
-		}
-		targets[ip] = targetPeer
-	}
-	clientKcpTable.RUnlock()
-
-	for ip, targetPeer := range targets {
-		targetPeer.mu.Lock()
-		err := writeFrame(targetPeer.conn, PacketTypeIP, pkt)
-		targetPeer.mu.Unlock()
-		if err != nil {
-			log.Printf("广播转发 %s 失败: %v", ip, err)
-		}
-	}
-}
-
 func maskToPrefix(mask string) (int, error) {
 	ip := net.ParseIP(mask).To4()
 	if ip == nil {
@@ -142,6 +118,9 @@ const (
 	PacketTypePing
 	PacketTypePong
 	PacketTypeVDHCP
+	PacketTypeHandshakeInit
+	PacketTypeHandshakeResp
+	PacketTypeSecure
 )
 
 type TunnelFrame struct {

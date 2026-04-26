@@ -1,6 +1,9 @@
 # 通用配置
 common:
-  password: "183178053"
+  # Noise IK / ECDH 身份密钥（base64 32 bytes）
+  privateKey: "REPLACE_WITH_LOCAL_PRIVATE_KEY_BASE64"
+  # 对端设备长期公钥（base64 32 bytes）
+  peerPublicKey: "REPLACE_WITH_PEER_PUBLIC_KEY_BASE64"
   mtu: 1250
   mode: "kcp"
   proxy: true
