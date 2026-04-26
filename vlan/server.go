@@ -58,7 +58,7 @@ func (s *Server) Start() {
 	// 启动顺序：
 	// 1) 初始化地址池（vDHCP）
 	// 2) 如开启代理则初始化服务端网关/NAT
-	// 3) 启动 TCP/KCP 监听
+	// 3) 启动 KCP 监听
 	if err := s.initVDHCP(); err != nil {
 		log.Fatalf("初始化虚拟DHCP失败: %v", err)
 	}
@@ -172,6 +172,8 @@ func (s *Server) handleClient(conn net.Conn) {
 			if err := s.performHandshake(peer, frame.IPPacket); err != nil {
 				return
 			}
+		default:
+			log.Printf("handleClient收到处理未识别类型")
 		}
 	}
 }
@@ -209,6 +211,8 @@ func (s *Server) handleSecurePacket(peer *ClientPeer, pkt []byte) {
 		s.handleVDHCP(peer, plain)
 	case PacketTypeIP:
 		s.handleIP(peer, plain)
+	default:
+		log.Printf("handleSecurePacket收到处理未识别类型")
 	}
 }
 
