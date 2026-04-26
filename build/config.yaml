@@ -2,9 +2,7 @@
 common:
   # Noise IK / ECDH 身份密钥（base64 32 bytes）
   privateKey: "eMCk80G94X4zuGNFMyfCPM7dZOiQbrCwR8q6G2i2zVk="
-  # 对端设备长期公钥（base64 32 bytes）
-  peerPublicKey: "pWCWz1rjlpgsvpLY6LQY9KcXaP7N9qSh5NAsNL7FzyI="
-  # 允许多个客户端公钥（服务端可选；与 peerPublicKey 并集生效）
+  # 对端设备长期公钥（base64 32 bytes）(白名单，如果无，则允许所有的公钥输入)
   peerPublicKeys: []
   mtu: 1250
   proxy: true

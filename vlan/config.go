@@ -26,7 +26,6 @@ type Config struct {
 // CommonConfig 通用配置
 type CommonConfig struct {
 	PrivateKey     string              `yaml:"privateKey"`
-	PeerPublicKey  string              `yaml:"peerPublicKey"`
 	PeerPublicKeys []string            `yaml:"peerPublicKeys"`
 	Identity       secure.Identity     `yaml:"-"`
 	PeerStatic     []byte              `yaml:"-"`
@@ -84,17 +83,6 @@ func validateConfig() {
 			log.Fatalf("解析privateKey失败: %v", err)
 		}
 		Conf.Common.Identity = identity
-	}
-	if Conf.Common.PeerPublicKey != "" {
-		peer, err := secure.ParsePublicKey(Conf.Common.PeerPublicKey)
-		if err != nil {
-			log.Fatalf("解析peerPublicKey失败: %v", err)
-		}
-		Conf.Common.PeerStatic = peer
-		if Conf.Common.PeerStaticSet == nil {
-			Conf.Common.PeerStaticSet = make(map[string]struct{})
-		}
-		Conf.Common.PeerStaticSet[string(peer)] = struct{}{}
 	}
 	for i, key := range Conf.Common.PeerPublicKeys {
 		peer, err := secure.ParsePublicKey(key)
@@ -156,19 +144,6 @@ func GenerateAndWriteKeys(path string, peerPublicKey string) (publicKey string, 
 		return "", err
 	}
 	return publicKey, nil
-}
-
-func WritePeerPublicKey(path string, peerPublicKey string) error {
-	if peerPublicKey == "" {
-		return fmt.Errorf("peerPublicKey不能为空")
-	}
-	if err := validateBase64Key("peerPublicKey", peerPublicKey); err != nil {
-		return err
-	}
-	if _, err := secure.ParsePublicKey(peerPublicKey); err != nil {
-		return fmt.Errorf("peerPublicKey非法: %w", err)
-	}
-	return writeKeysToConfig(path, "", peerPublicKey)
 }
 
 func generateNoiseKeyPair() (privateKey string, publicKey string, err error) {
