@@ -128,6 +128,7 @@ sudo nohup ./build/vlan.bin server > server.log 2>&1 &
 .
 ├── main.go                # 程序入口
 ├── vlan/                  # 核心组网、隧道、路由、客户端/服务端逻辑
+│   └── secure/            # Noise IK 风格握手、会话密钥轮换与 AEAD 封装
 ├── vdhcp/                 # 虚拟 DHCP 管理与分配
 ├── wintun/                # Windows TUN 依赖与头文件
 └── build/                 # 构建产物与配置样例
