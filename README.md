@@ -1,73 +1,152 @@
-# dev-v0.04版
-### 1.增加服务端流量代理功能
-### 2.增加虚拟DHCP自动分配IP功能
+# LwyV-Net
 
-# dev-v0.03版
+> 一个面向公网环境的私域网络基础设施：通过虚拟网卡、加密隧道与中继能力，把分散设备组织成可控、可扩展、低门槛的“软件定义内网”。
 
-### 1.实现TCP，KCP双协议
-### 2.优化重连机制
+[![Go Version](https://img.shields.io/badge/Go-1.20%2B-00ADD8?logo=go)](https://go.dev/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
+---
 
-# dev-v0.02版
+## 项目愿景
 
-### 1.增加断线重连机制
-### 2.密钥加密
-### 3.优化代码结构降低延迟
+LwyV-Net 的目标不是“再做一个 VPN 工具”，而是成为 **下一代设备互联（IoT / 机器人 / 自动驾驶与移动终端）的基础网络层**：
 
-# dev-v0.01版
-### 1.初始可用版本
+- 在复杂公网环境中构建稳定的私域连接；
+- 为设备到设备、设备到云、边缘到边缘提供统一组网能力；
+- 逐步演进为像 Docker 一样易用、可标准化、可规模化的开源基础设施。
 
+如果你关注“让海量异构设备在公网下像局域网一样协同”，这个项目正是为此而生。
 
-# 工作原理
+---
+
+## 当前已实现（Now）
+
+- ✅ **TUN 虚拟网卡驱动接入**
+- ✅ **二层 / 三层 IP 数据包抓取与解析**
+- ✅ **加密转发与中转代理**
+- ✅ **异地虚拟局域网组网（类 VPN）**
+- ✅ **双传输协议支持：TCP / KCP**
+- ✅ **断线重连机制与连接稳定性优化**
+- ✅ **虚拟 DHCP 自动分配 IP**
+- ✅ **服务端流量代理能力**
+
+> 以上能力已可支撑基础的跨地域设备互联与内网化访问场景。
+
+---
+
+## 未来规划（Roadmap）
+
+### 网络与连接能力
+- 🔜 NAT 穿透（UDP 打洞）
+- 🔜 P2P 直连（降低中转延迟与带宽成本）
+- 🔜 智能链路选择、自动降级与重试
+
+### 平台与工程化
+- 🔜 多平台全面适配：Windows / Linux / macOS / Android
+- 🔜 中继节点部署体系（节点池、调度、容灾）
+- 🔜 节点优选与基础负载均衡
+
+### 管理与可观测性
+- 🔜 Web 管理后台：设备、节点、权限、密钥配置
+- 🔜 流量监控与链路健康状态面板
+- 🔜 可审计的网络策略与访问控制
+
+---
+
+## 典型应用场景
+
+- **物联网（IoT）**：海量设备跨网络环境稳定接入与远程维护
+- **机器人系统**：多机器人协同、远程控制、边云联动
+- **自动驾驶/骑行等移动终端**：车端/路侧/云端安全互通
+- **分布式边缘计算**：跨站点服务发现、控制通道、数据回传
+- **开发测试网络**：快速搭建“跨地域实验内网”
+
+---
+
+## 架构流程（简化）
+
+```text
 应用程序
-↓
-Windows 协议栈
-↓
+  ↓
+操作系统协议栈
+  ↓
 TUN 虚拟网卡
-↓
-Go 读取 TUN
-↓
-writePacket 封包
-↓
-TCP / KCP
-↓
-服务端转发
-↓
-对端 TCP / KCP
-↓
-Go 写入 TUN
-↓
-对端 Windows 协议栈
-↓
-对端应用程序
+  ↓
+LwyV-Net 数据面（抓包/封包/加密）
+  ↓
+TCP / KCP 隧道
+  ↓
+服务端中继 / 目标端
+  ↓
+对端解封装并写回 TUN
+  ↓
+对端协议栈与应用
+```
 
+---
 
+## 快速开始
 
-##========================================================================
-##
-chmod +x vlan.bin
-### 启动运行
-sudo ./vlan.bin server
-./vlan 
+### 1) 构建
 
-
-### 关闭防火墙
-netsh advfirewall set allprofiles state off
-
-
-### 打包
+```bash
 go build -o build/vlan.exe
+```
 
-$env:CGO_ENABLED=0; $env:GOOS="linux"; $env:GOARCH="amd64"; go build -o build/vlan.bin
+Linux 交叉编译：
 
-sudo nohup ./vlan.bin server &>/dev/null &
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o build/vlan.bin
+```
 
-sudo nohup ./vlan.bin server > server.log 2>&1 &
+### 2) 启动服务端
 
-sudo while true; do ./vlan server; sleep 1; done
+```bash
+chmod +x build/vlan.bin
+sudo ./build/vlan.bin server
+```
 
-ps -ef | grep vlan.bin
+后台运行（可选）：
 
-kill -9 进程ID
+```bash
+sudo nohup ./build/vlan.bin server > server.log 2>&1 &
+```
 
-kill 进程ID
+### 3) 启动客户端
+
+```bash
+./build/vlan.bin
+```
+
+> 实际启动参数与配置项请结合源码中的配置模块进行调整（如节点地址、密钥、协议选择）。
+
+---
+
+## 项目结构
+
+```text
+.
+├── main.go                # 程序入口
+├── vlan/                  # 核心组网、隧道、路由、客户端/服务端逻辑
+├── vdhcp/                 # 虚拟 DHCP 管理与分配
+├── wintun/                # Windows TUN 依赖与头文件
+└── build/                 # 构建产物与配置样例
+```
+
+---
+
+## 开源与共建
+
+LwyV-Net 目前处于持续演进阶段，非常欢迎你通过以下方式参与：
+
+- 提交 Issue：反馈 bug、使用场景与需求；
+- 提交 PR：协议优化、稳定性改进、平台适配；
+- 参与设计讨论：NAT 穿透、P2P、控制面架构、可观测性体系。
+
+如果你也认同“公网上的私域网络将成为未来设备网络基础设施”，欢迎一起把它打造成开源标杆。
+
+---
+
+## License
+
+MIT License. See [LICENSE](./LICENSE).
