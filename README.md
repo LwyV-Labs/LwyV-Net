@@ -85,6 +85,69 @@ TCP / KCP 隧道
 
 ---
 
+## 加密流程（补充说明）
+
+> 当前数据面加密由 `vlan/secure/session.go` 实现，采用 **Noise IK 风格握手 + X25519 + HKDF-SHA256 + ChaCha20-Poly1305(AEAD)**。
+
+### 1) 身份与密钥准备
+
+- 双端都使用 32 字节 Curve25519 静态私钥（配置中为 Base64），启动时解析得到静态公钥；
+- 设备标识 `deviceID` 由对端静态公钥做 SHA-256 后取前 8 字节生成（用于日志与会话识别）；
+- 握手时每一轮会生成新的会话 `keyID`（客户端/服务端分别自增）。
+
+### 2) 握手阶段（建立会话密钥）
+
+客户端（Initiator）：
+1. 生成一次性临时密钥对 `ephPriv/ephPub`；
+2. 发送握手初始化帧：`clientEphPub(32B) + clientStaticPub(32B)`（`PacketTypeHandshakeInit`）；
+3. 接收服务端响应帧：`serverEphPub(32B)`（`PacketTypeHandshakeResp`）；
+4. 计算 3 组共享密钥材料：`es`、`se`、`ee`。
+
+服务端（Responder）：
+1. 接收并解析客户端 `clientEphPub + clientStaticPub`；
+2. （可选）若配置了 `peerPublicKey`，校验是否为允许的对端静态公钥；
+3. 生成自己的临时密钥并回传 `serverEphPub`；
+4. 同样计算 `es`、`se`、`ee`。
+
+### 3) 会话密钥派生
+
+- 将协议名 `lwyv-net-ik-v1` 与 `es/se/ee` 拼接为输入材料；
+- 使用 HKDF-SHA256（info=`transport`）拉取两把 32 字节对称密钥 `k1/k2`；
+- 发起方使用：`send=k1, recv=k2`；响应方反向使用：`send=k2, recv=k1`。
+
+这样可以保证同一条隧道两端的收发密钥方向相反，避免同密钥双向复用。
+
+### 4) 数据加密封装（Secure Frame）
+
+每个加密包结构如下：
+
+```text
+[ keyID(4B) | counter(8B) | innerType(1B) | ciphertext+tag ]
+```
+
+- `keyID`：标记当前会话版本，便于轮换时兼容旧会话；
+- `counter`：发送方向单调递增计数器；
+- `innerType`：内层业务类型（例如 IP 包、VDHCP 消息等）；
+- `ciphertext+tag`：ChaCha20-Poly1305 输出，认证数据（AAD）为前 13 字节头部。
+
+Nonce 构造方式：使用 AEAD Nonce 长度（ChaCha20-Poly1305 为 12 字节），后 8 字节写入 `counter`，前部补 0。
+
+### 5) 解密与重放保护
+
+- 收包先根据 `keyID` 在 `SessionManager` 中匹配当前会话；若不匹配则尝试上一轮会话（平滑轮换）；
+- 校验 `counter` 必须严格大于已接收最大值，否则判定为重放并丢弃；
+- 通过 AEAD `Open` 验证并解密，失败即丢包。
+
+### 6) 会话轮换机制
+
+- 每次重连/重新握手都会生成新的 `keyID` 与新会话；
+- `SessionManager.Rotate(next)` 会把旧会话降级为 `previous`，新会话设为 `current`；
+- 解密阶段允许 `current + previous` 双会话并行，降低切换瞬间丢包风险。
+
+> 说明：代码中预留了 `RekeyInterval = 120s` 常量，当前版本主要在“重连或重握手”时触发换钥，后续可扩展为定时主动轮换。
+
+---
+
 ## 快速开始
 
 ### 1) 构建
