@@ -71,9 +71,11 @@ func (c *Client) startKCP(dev tun.Device) {
 	for {
 		conn, err := kcp.DialWithOptions(Conf.Client.ServerIP, nil, 0, 0)
 		if err != nil {
+			log.Printf("连接服务端失败: %v，1秒后重试", err)
 			time.Sleep(time.Second)
 			continue
 		}
+		log.Printf("已连接服务端: %s", Conf.Client.ServerIP)
 		setupKCPSession(conn)
 		c.runSession(dev, conn)
 	}
@@ -83,13 +85,17 @@ func (c *Client) runSession(dev tun.Device, conn net.Conn) {
 	// 每次连接对应一个会话管理器（保存当前密钥状态）。
 	sessionMgr := &secure.SessionManager{}
 	if err := c.performHandshake(conn, sessionMgr); err != nil {
+		log.Printf("认证握手失败: %v", err)
 		_ = conn.Close()
 		return
 	}
+	log.Printf("认证握手成功，开始申请虚拟地址")
 	if err := c.initAddress(conn, sessionMgr); err != nil {
+		log.Printf("初始化地址失败: %v", err)
 		_ = conn.Close()
 		return
 	}
+	log.Printf("虚拟地址初始化完成，进入收发循环")
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -127,14 +133,21 @@ func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) 
 		return "", "", err
 	}
 	if err = c.writeSecureFrame(conn, sessionMgr, PacketTypeVDHCP, discover); err != nil {
+		log.Printf("发送DHCP Discover失败: %v", err)
 		return "", "", err
 	}
 	frame, err := readFrame(conn, maxFramePayload())
-	if err != nil || frame.Type != PacketTypeSecure {
+	if err != nil {
+		log.Printf("读取DHCP Offer失败: err=%v", err)
+		return "", "", fmt.Errorf("读取DHCP OFFER失败")
+	}
+	if frame.Type != PacketTypeSecure {
+		log.Printf("读取DHCP Offer失败: 非预期类型=%d", frame.Type)
 		return "", "", fmt.Errorf("读取DHCP OFFER失败")
 	}
 	innerType, plain, err := sessionMgr.Decrypt(frame.IPPacket)
 	if err != nil || PacketType(innerType) != PacketTypeVDHCP {
+		log.Printf("解密DHCP Offer失败: err=%v innerType=%d", err, innerType)
 		return "", "", fmt.Errorf("解密DHCP OFFER失败")
 	}
 	msg, err := vdhcp.DecodeMessage(plain)
@@ -187,6 +200,7 @@ func (c *Client) connToTun(dev tun.Device, conn net.Conn, sessionMgr *secure.Ses
 		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 		frame, err := readFrame(conn, maxFramePayload())
 		if err != nil {
+			log.Printf("读取服务端数据失败，连接即将重建: %v", err)
 			return
 		}
 		if frame.Type == PacketTypePong {
@@ -199,10 +213,12 @@ func (c *Client) connToTun(dev tun.Device, conn net.Conn, sessionMgr *secure.Ses
 		}
 		innerType, plain, err := sessionMgr.Decrypt(frame.IPPacket)
 		if err != nil || PacketType(innerType) != PacketTypeIP {
+			log.Printf("解密业务数据失败: err=%v innerType=%d", err, innerType)
 			continue
 		}
 		if err = writeToTun(dev, plain); err != nil {
 			// TUN 写失败通常意味着网卡已关闭或系统层异常。
+			log.Printf("写入TUN失败: %v", err)
 			return
 		}
 	}
@@ -227,6 +243,7 @@ func (c *Client) performHandshake(conn net.Conn, sessionMgr *secure.SessionManag
 	}
 	hs := secure.NewHandshaker(Conf.Common.Identity, Conf.Common.PeerStatic)
 	keyID := c.keyID.Add(1)
+	log.Printf("开始认证握手: keyID=%d", keyID)
 	session, err := hs.InitiatorHandshake(
 		func(msg []byte) error { return writeFrame(conn, PacketTypeHandshakeInit, msg) },
 		func() ([]byte, error) {
@@ -242,8 +259,10 @@ func (c *Client) performHandshake(conn net.Conn, sessionMgr *secure.SessionManag
 		keyID,
 	)
 	if err != nil {
+		log.Printf("握手协商失败: keyID=%d err=%v", keyID, err)
 		return err
 	}
 	sessionMgr.Rotate(session)
+	log.Printf("握手完成并切换会话: keyID=%d", keyID)
 	return nil
 }
