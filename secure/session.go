@@ -170,6 +170,9 @@ func NewHandshaker(identity Identity, peerStatic []byte) *Handshaker {
 }
 
 func (h *Handshaker) InitiatorHandshake(writeMsg func([]byte) error, readMsg func() ([]byte, error), keyID uint32) (*CryptoSession, error) {
+	if len(h.peerStatic) != 32 {
+		return nil, fmt.Errorf("initiator requires server static public key (common.peerPublicKeys[0])")
+	}
 	ephPriv := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, ephPriv); err != nil {
 		return nil, err
