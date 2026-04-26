@@ -173,7 +173,7 @@ func (s *Server) handleClient(conn net.Conn) {
 
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
-		frame, err := readFrame(conn, Conf.Common.MTU)
+		frame, err := readFrame(conn, maxFramePayload())
 		if err != nil {
 			return
 		}
@@ -321,7 +321,7 @@ func (s *Server) performHandshake(peer *ClientPeer, initMsg []byte) error {
 				initMsg = nil
 				return msg, nil
 			}
-			frame, err := readFrame(peer.conn, secure.MaxHandshakeMsgSize)
+			frame, err := readFrame(peer.conn, maxFramePayload())
 			if err != nil {
 				return nil, err
 			}

@@ -134,7 +134,7 @@ func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) 
 	if err = c.writeSecureFrame(conn, sessionMgr, PacketTypeVDHCP, discover); err != nil {
 		return "", "", err
 	}
-	frame, err := readFrame(conn, Conf.Common.MTU)
+	frame, err := readFrame(conn, maxFramePayload())
 	if err != nil || frame.Type != PacketTypeSecure {
 		return "", "", fmt.Errorf("读取DHCP OFFER失败")
 	}
@@ -186,7 +186,7 @@ func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr 
 func (c *Client) connToTun(dev tun.Device, conn net.Conn, sessionMgr *secure.SessionManager) {
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
-		frame, err := readFrame(conn, Conf.Common.MTU)
+		frame, err := readFrame(conn, maxFramePayload())
 		if err != nil {
 			return
 		}

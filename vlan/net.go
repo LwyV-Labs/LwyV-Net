@@ -184,6 +184,10 @@ func writeFrame(conn net.Conn, packetType PacketType, payload []byte) error {
 	return nil
 }
 
+func maxFramePayload() int {
+	return Conf.Common.MTU + 128
+}
+
 //=========================== TUN 读写 ===========================
 
 // writeToTun 写网卡
