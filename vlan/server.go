@@ -54,6 +54,10 @@ func NewServer() *Server {
 func StartServer() { NewServer().Start() }
 
 func (s *Server) Start() {
+	// 启动顺序：
+	// 1) 初始化地址池（vDHCP）
+	// 2) 如开启代理则初始化服务端网关/NAT
+	// 3) 启动 TCP/KCP 监听
 	if err := s.initVDHCP(); err != nil {
 		log.Fatalf("初始化虚拟DHCP失败: %v", err)
 	}
@@ -98,6 +102,7 @@ func (s *Server) initVDHCP() error {
 }
 
 func (s *Server) initGateway() error {
+	// 只有在 proxy=true 时才需要服务端扮演“虚拟网关”。
 	if !Conf.Common.Proxy {
 		return nil
 	}
@@ -122,6 +127,7 @@ func (s *Server) initGateway() error {
 	serverTunMu.Lock()
 	serverTunDev = dev
 	serverTunMu.Unlock()
+	// 启动下行分发：服务端 TUN -> 对应客户端。
 	go s.tunToClients(dev)
 	log.Printf("✅ 服务端网关已启用: if=%s gw=%s/%s", ifName, Conf.Common.Gateway, mask)
 	return nil
@@ -163,6 +169,7 @@ func (s *Server) startKCP() {
 }
 
 func (s *Server) handleClient(conn net.Conn) {
+	// 一个连接对应一个 peer，上面维护其会话和分配到的虚拟 IP。
 	peer := &ClientPeer{conn: conn, session: &secure.SessionManager{}}
 	defer s.cleanupClientPeer(peer)
 
@@ -179,12 +186,15 @@ func (s *Server) handleClient(conn net.Conn) {
 		}
 		switch frame.Type {
 		case PacketTypePing:
+			// 客户端保活包。
 			if !s.handlePing(peer) {
 				return
 			}
 		case PacketTypeSecure:
+			// 业务密文帧。
 			s.handleSecurePacket(peer, frame.IPPacket)
 		case PacketTypeHandshakeInit:
+			// 支持连接内重握手（密钥轮转）。
 			if err := s.performHandshake(peer, frame.IPPacket); err != nil {
 				return
 			}
@@ -193,6 +203,7 @@ func (s *Server) handleClient(conn net.Conn) {
 }
 
 func (s *Server) cleanupClientPeer(peer *ClientPeer) {
+	// 连接结束时，需要从路由表和 DHCP 租约中清理。
 	s.clientTable.Lock()
 	for ip, p := range s.clientTable.m {
 		if p == peer {
@@ -214,6 +225,7 @@ func (s *Server) handlePing(peer *ClientPeer) bool {
 }
 
 func (s *Server) handleSecurePacket(peer *ClientPeer, pkt []byte) {
+	// 先解密外层 secure 帧，再看内层业务类型。
 	innerType, plain, err := peer.session.Decrypt(pkt)
 	if err != nil {
 		return
@@ -236,6 +248,7 @@ func (s *Server) handleVDHCP(peer *ClientPeer, pkt []byte) {
 	}
 	ip, err := s.dhcp.Allocate(peer.peerPublicKey)
 	if err != nil {
+		// 地址池耗尽时返回 NAK。
 		nak, _ := vdhcp.EncodeNak(err.Error())
 		peer.mu.Lock()
 		_ = s.writeSecureFrame(peer, PacketTypeVDHCP, nak)
@@ -253,6 +266,7 @@ func (s *Server) handleVDHCP(peer *ClientPeer, pkt []byte) {
 		return
 	}
 	peer.virtualIP = ip
+	// 注册“虚拟IP -> 连接”的路由映射。
 	s.clientTable.Lock()
 	s.clientTable.m[ip] = peer
 	s.clientTable.Unlock()
@@ -260,10 +274,12 @@ func (s *Server) handleVDHCP(peer *ClientPeer, pkt []byte) {
 
 func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {
 	heardInfo, err := headerParsing(pkt)
+	// 基本校验：源地址必须等于该 peer 分配到的虚拟地址，防止伪造。
 	if err != nil || peer.virtualIP == "" || heardInfo.SrcIP != peer.virtualIP {
 		return
 	}
 	if heardInfo.IsBroadcast {
+		// 广播/组播：复制给其它在线 peer。
 		s.broadcastPacket(&heardInfo, pkt)
 		return
 	}
@@ -271,6 +287,7 @@ func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {
 	targetPeer, exists := s.clientTable.m[heardInfo.DstIP]
 	s.clientTable.RUnlock()
 	if !exists {
+		// 目标不在客户端表中：交给服务端网关 TUN（若已启用）。
 		_ = s.writeToServerTun(pkt)
 		return
 	}
@@ -308,6 +325,7 @@ func (s *Server) writeSecureFrame(peer *ClientPeer, packetType PacketType, paylo
 }
 
 func (s *Server) performHandshake(peer *ClientPeer, initMsg []byte) error {
+	// 服务端作为响应方（Responder）完成握手，并拿到对端公钥。
 	if len(Conf.Common.Identity.Private) == 0 {
 		return fmt.Errorf("common.privateKey is required")
 	}
@@ -337,6 +355,7 @@ func (s *Server) performHandshake(peer *ClientPeer, initMsg []byte) error {
 	}
 	peer.peerPublicKey = base64.StdEncoding.EncodeToString(remotePub)
 	peer.deviceID = secure.DeviceIDFromPublicKey(remotePub)
+	// 用新会话替换旧会话，实现平滑轮转。
 	peer.session.Rotate(session)
 	return nil
 }
@@ -352,6 +371,7 @@ func (s *Server) writeToServerTun(pkt []byte) error {
 
 func (s *Server) tunToClients(dev tun.Device) {
 	for {
+		// 从服务端网关 TUN 读到的数据，按目标 IP 发回对应客户端。
 		packets, err := readFromTun(dev, Conf.Common.MTU)
 		if err != nil {
 			return

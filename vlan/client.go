@@ -24,8 +24,10 @@ const (
 )
 
 type Client struct {
+	// tunPacketChan：把“读 TUN”和“写网络”解耦，避免互相阻塞。
 	tunPacketChan chan []byte
-	keyID         atomic.Uint32
+	// keyID：每次握手递增，用于会话轮转标识。
+	keyID atomic.Uint32
 }
 
 func NewClient() *Client {
@@ -35,6 +37,7 @@ func NewClient() *Client {
 func StartClient() { NewClient().Start() }
 
 func (c *Client) Start() {
+	// 1) 创建 TUN 网卡；2) 放行本机策略；3) 启动收发循环。
 	dev, err := createTun(Conf.Client.IfName, Conf.Common.MTU)
 	if err != nil {
 		log.Fatalf("创建虚拟网卡失败: %v", err)
@@ -48,8 +51,10 @@ func (c *Client) Start() {
 
 	switch Conf.Common.Mode {
 	case "TCP":
+		// TCP 模式：稳定、易调试。
 		c.startTCP(dev)
 	case "KCP":
+		// KCP 模式：基于 UDP，通常时延更低。
 		c.startKCP(dev)
 	default:
 		log.Fatalf("不支持类型: %s", Conf.Common.Mode)
@@ -69,6 +74,7 @@ func (c *Client) installCleanupSignal() {
 
 func (c *Client) startTCP(dev tun.Device) {
 	for {
+		// 断线自动重连。
 		conn, err := net.DialTimeout("tcp", Conf.Client.ServerIP, 5*time.Second)
 		if err != nil {
 			time.Sleep(time.Second)
@@ -91,6 +97,7 @@ func (c *Client) startKCP(dev tun.Device) {
 }
 
 func (c *Client) runSession(dev tun.Device, conn net.Conn) {
+	// 每次连接对应一个会话管理器（保存当前密钥状态）。
 	sessionMgr := &secure.SessionManager{}
 	if err := c.performHandshake(conn, sessionMgr); err != nil {
 		_ = conn.Close()
@@ -103,14 +110,17 @@ func (c *Client) runSession(dev tun.Device, conn net.Conn) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		// 下行：网络 -> TUN
 		c.connToTun(dev, conn, sessionMgr)
 	}()
+	// 上行：TUN/心跳 -> 网络
 	c.clientSendLoop(conn, done, sessionMgr)
 	_ = conn.Close()
 	cleanupClientProxyRouting()
 }
 
 func (c *Client) initAddress(conn net.Conn, sessionMgr *secure.SessionManager) error {
+	// 通过虚拟 DHCP 从服务端申请一个虚拟网段地址。
 	dhcpIP, dhcpMask, err := c.requestVDHCP(conn, sessionMgr)
 	if err != nil {
 		return err
@@ -119,6 +129,7 @@ func (c *Client) initAddress(conn net.Conn, sessionMgr *secure.SessionManager) e
 		return fmt.Errorf("配置虚拟网卡 IP 失败: %w", err)
 	}
 	if Conf.Common.Proxy {
+		// 代理模式：把默认流量经虚拟网卡导向服务端网关。
 		if err = setupClientProxyRouting(Conf.Client.ServerIP, Conf.Client.IfName, Conf.Common.Gateway); err != nil {
 			return fmt.Errorf("客户端代理路由初始化失败: %w", err)
 		}
@@ -127,6 +138,7 @@ func (c *Client) initAddress(conn net.Conn, sessionMgr *secure.SessionManager) e
 }
 
 func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) (string, string, error) {
+	// DHCP Discover -> Offer 的最小流程（简化版 DHCP 协议）。
 	discover, err := vdhcp.EncodeDiscover()
 	if err != nil {
 		return "", "", err
@@ -158,7 +170,9 @@ func (c *Client) tunToPacketQueue(dev tun.Device) {
 		for _, pkt := range packets {
 			select {
 			case c.tunPacketChan <- pkt:
+				// 成功入队。
 			default:
+				// 队列满时丢弃，优先保证主循环不阻塞。
 			}
 		}
 	}
@@ -172,10 +186,12 @@ func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr 
 		case <-done:
 			return
 		case <-ticker.C:
+			// 心跳包用于保活与探测链路可用性。
 			if err := writeFrame(conn, PacketTypePing, nil); err != nil {
 				return
 			}
 		case pkt := <-c.tunPacketChan:
+			// 所有业务包都先走会话加密，再发外层 Secure 帧。
 			if err := c.writeSecureFrame(conn, sessionMgr, PacketTypeIP, pkt); err != nil {
 				return
 			}
@@ -191,9 +207,11 @@ func (c *Client) connToTun(dev tun.Device, conn net.Conn, sessionMgr *secure.Ses
 			return
 		}
 		if frame.Type == PacketTypePong {
+			// 心跳响应包，不进 TUN。
 			continue
 		}
 		if frame.Type != PacketTypeSecure {
+			// 仅处理加密数据帧。
 			continue
 		}
 		innerType, plain, err := sessionMgr.Decrypt(frame.IPPacket)
@@ -201,6 +219,7 @@ func (c *Client) connToTun(dev tun.Device, conn net.Conn, sessionMgr *secure.Ses
 			continue
 		}
 		if err = writeToTun(dev, plain); err != nil {
+			// TUN 写失败通常意味着网卡已关闭或系统层异常。
 			return
 		}
 	}
@@ -219,6 +238,7 @@ func (c *Client) writeSecureFrame(conn net.Conn, sessionMgr *secure.SessionManag
 }
 
 func (c *Client) performHandshake(conn net.Conn, sessionMgr *secure.SessionManager) error {
+	// 客户端作为发起方（Initiator）完成一次 Noise 握手。
 	if len(Conf.Common.Identity.Private) == 0 {
 		return fmt.Errorf("common.privateKey is required")
 	}
