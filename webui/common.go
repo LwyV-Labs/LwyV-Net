@@ -1,7 +1,9 @@
 package webui
 
 import (
+	"NetworkSetup/secure"
 	"NetworkSetup/vlan"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,6 +19,12 @@ type configPayload struct {
 	Server vlan.ServerConfig `json:"server" yaml:"server"`
 	Client vlan.ClientConfig `json:"client" yaml:"client"`
 	VDHCP  vlan.VDHCPConfig  `json:"vdhcp" yaml:"vdhcp"`
+}
+
+type keyInfo struct {
+	PublicKey  string `json:"publicKey"`
+	Generated  bool   `json:"generated"`
+	HasPrivate bool   `json:"hasPrivate"`
 }
 
 func loadConfig(path string) (configPayload, error) {
@@ -73,4 +81,25 @@ func toLocalURL(listenAddr string) string {
 		return addr
 	}
 	return "http://" + addr
+}
+
+func getKeyInfo(path string) (keyInfo, error) {
+	var info keyInfo
+	cfg, err := loadConfig(path)
+	if err != nil {
+		return info, err
+	}
+	privateKey := strings.TrimSpace(cfg.Common.PrivateKey)
+	if privateKey == "" {
+		return keyInfo{HasPrivate: false}, nil
+	}
+	identity, err := secure.ParsePrivateKey(privateKey)
+	if err != nil {
+		return info, err
+	}
+	return keyInfo{
+		PublicKey:  base64.StdEncoding.EncodeToString(identity.Public),
+		Generated:  false,
+		HasPrivate: true,
+	}, nil
 }
