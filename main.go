@@ -26,16 +26,6 @@ func main() {
 				log.Fatalf("启动服务端 Web 控制台失败: %v", err)
 			}
 			return
-		case "web-client":
-			if err := webui.StartClientConsole(configPath, webConsoleAddr); err != nil {
-				log.Fatalf("启动客户端 Web 控制台失败: %v", err)
-			}
-			return
-		case "web-server":
-			if err := webui.StartServerConsole(configPath, webConsoleAddr); err != nil {
-				log.Fatalf("启动服务端 Web 控制台失败: %v", err)
-			}
-			return
 		default:
 			log.Fatal(runType + " is not a valid runType")
 		}
