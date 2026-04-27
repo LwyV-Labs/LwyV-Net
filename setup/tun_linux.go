@@ -39,6 +39,26 @@ func AllowTunTraffic(ifName string) error {
 func CleanupTunTraffic() {
 }
 
+func SetInterfaceDNS(ifName string, dns []string) error {
+	if _, err := exec.LookPath("resolvectl"); err != nil {
+		// 非 systemd-resolved 环境下可能不存在 resolvectl，这里不强制失败。
+		return nil
+	}
+	args := append([]string{"dns", ifName}, dns...)
+	if err := exec.Command("resolvectl", args...).Run(); err != nil {
+		return err
+	}
+	// 将该接口标记为默认 DNS 路由域，避免继续走原始出口 DNS。
+	return exec.Command("resolvectl", "domain", ifName, "~.").Run()
+}
+
+func ResetInterfaceDNS(ifName string) error {
+	if _, err := exec.LookPath("resolvectl"); err != nil {
+		return nil
+	}
+	return exec.Command("resolvectl", "revert", ifName).Run()
+}
+
 func GetDefaultRoute() (*defaultRouteInfo, error) {
 	out, err := exec.Command("sh", "-c", "ip route show default | head -n 1").Output()
 	if err != nil {

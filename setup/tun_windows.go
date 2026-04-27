@@ -105,6 +105,30 @@ func CleanupTunTraffic() {
 	_ = RemoveFirewallRulesForTun()
 }
 
+func SetInterfaceDNS(ifName string, dns []string) error {
+	if len(dns) == 0 {
+		return nil
+	}
+	quoted := make([]string, 0, len(dns))
+	for _, d := range dns {
+		quoted = append(quoted, fmt.Sprintf("%q", d))
+	}
+	ps := fmt.Sprintf(`
+$alias = %q
+$servers = @(%s)
+Set-DnsClientServerAddress -InterfaceAlias $alias -ServerAddresses $servers -ErrorAction Stop
+`, ifName, strings.Join(quoted, ", "))
+	return RunPowerShell(ps)
+}
+
+func ResetInterfaceDNS(ifName string) error {
+	ps := fmt.Sprintf(`
+$alias = %q
+Set-DnsClientServerAddress -InterfaceAlias $alias -ResetServerAddresses -ErrorAction Stop
+`, ifName)
+	return RunPowerShell(ps)
+}
+
 func GetDefaultRoute() (*defaultRouteInfo, error) {
 	ps := `
 $rt = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop |
