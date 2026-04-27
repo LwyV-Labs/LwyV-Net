@@ -101,6 +101,39 @@ func InitConfig(path string, mode RunMode) {
 	validateConfig(mode)
 }
 
+type rawConfigForKey struct {
+	Common struct {
+		PrivateKey string `yaml:"privateKey"`
+	} `yaml:"common"`
+}
+
+// EnsurePrivateKey 确保配置中存在 privateKey：
+//   - 若为空，则自动生成并写回配置；
+//   - 返回当前可用的 publicKey 及是否本次新生成。
+func EnsurePrivateKey(path string) (publicKey string, generated bool, err error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false, fmt.Errorf("读取配置文件失败: %w", err)
+	}
+	var raw rawConfigForKey
+	if err = yaml.Unmarshal(data, &raw); err != nil {
+		return "", false, fmt.Errorf("解析配置文件失败: %w", err)
+	}
+	privateKey := strings.TrimSpace(raw.Common.PrivateKey)
+	if privateKey == "" {
+		pub, genErr := GenerateAndWriteKeys(path, "")
+		if genErr != nil {
+			return "", false, genErr
+		}
+		return pub, true, nil
+	}
+	identity, err := secure.ParsePrivateKey(privateKey)
+	if err != nil {
+		return "", false, fmt.Errorf("解析privateKey失败: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(identity.Public), false, nil
+}
+
 func validateConfig(mode RunMode) {
 	// privateKey / peerPublicKey 在 YAML 中是字符串，
 	// 这里会解析成后续握手加密真正要用的二进制对象。
