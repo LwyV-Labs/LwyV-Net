@@ -57,8 +57,15 @@ type VDHCPConfig struct {
 
 var Conf Config
 
+type RunMode string
+
+const (
+	RunModeClient RunMode = "client"
+	RunModeServer RunMode = "server"
+)
+
 // InitConfig 加载配置文件
-func InitConfig(path string) {
+func InitConfig(path string, mode RunMode) {
 	// 第一步：把配置文件完整读入内存。
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -71,10 +78,10 @@ func InitConfig(path string) {
 	}
 
 	// 第三步：做字段合法性校验 + 衍生字段填充（例如密钥解析）。
-	validateConfig()
+	validateConfig(mode)
 }
 
-func validateConfig() {
+func validateConfig(mode RunMode) {
 	// privateKey / peerPublicKey 在 YAML 中是字符串，
 	// 这里会解析成后续握手加密真正要用的二进制对象。
 	if Conf.Common.PrivateKey != "" {
@@ -99,13 +106,17 @@ func validateConfig() {
 		Conf.Common.PeerStaticSet[string(peer)] = struct{}{}
 	}
 
-	// 端口属于高风险配置，先做范围检查。
-	if Conf.Server.Port <= 0 || Conf.Server.Port > 65535 {
-		log.Fatalf("非法服务端端口: %d", Conf.Server.Port)
+	if mode == RunModeServer {
+		// 端口属于高风险配置，先做范围检查。
+		if Conf.Server.Port <= 0 || Conf.Server.Port > 65535 {
+			log.Fatalf("非法服务端端口: %d", Conf.Server.Port)
+		}
 	}
-	// 客户端目标地址不能为空（格式校验由 Dial 时再次兜底）。
-	if Conf.Client.ServerIP == "" {
-		log.Fatalf("客户端ServerIP不能为空")
+	if mode == RunModeClient {
+		// 客户端目标地址不能为空（格式校验由 Dial 时再次兜底）。
+		if Conf.Client.ServerIP == "" {
+			log.Fatalf("客户端ServerIP不能为空")
+		}
 	}
 	// 网关、掩码必须能被正确解析。
 	if net.ParseIP(Conf.Common.Gateway) == nil {
@@ -120,9 +131,9 @@ func validateConfig() {
 //
 // 注意：
 //   - privateKey 是“本机”的长期私钥，会自动写入 common.privateKey。
-//   - 返回值 publicKey 是“本机”的长期公钥，需要复制到对端配置的 common.peerPublicKey。
-//   - peerPublicKey 传空字符串时，不会覆盖配置中已有的 common.peerPublicKey。
-//   - peerPublicKey 非空时，会校验其为 base64 32 bytes，并写入 common.peerPublicKey。
+//   - 返回值 publicKey 是“本机”的长期公钥，需要复制到对端配置的 common.peerPublicKeys[0]。
+//   - peerPublicKey 传空字符串时，不会覆盖配置中已有的 common.peerPublicKeys。
+//   - peerPublicKey 非空时，会校验其为 base64 32 bytes，并写入 common.peerPublicKeys 的第 1 项。
 func GenerateAndWriteKeys(path string, peerPublicKey string) (publicKey string, err error) {
 	privateKey, publicKey, err := generateNoiseKeyPair()
 	if err != nil {
@@ -196,7 +207,7 @@ func writeKeysToConfig(path string, privateKey string, peerPublicKey string) err
 		setStringValue(common, "privateKey", privateKey, "Noise IK / ECDH 身份密钥（base64 32 bytes）")
 	}
 	if peerPublicKey != "" {
-		setStringValue(common, "peerPublicKey", peerPublicKey, "对端设备长期公钥（base64 32 bytes）")
+		setStringListValue(common, "peerPublicKeys", []string{peerPublicKey}, "对端设备长期公钥白名单（base64 32 bytes）")
 	}
 
 	var buf bytes.Buffer
@@ -279,4 +290,34 @@ func setStringValue(mapping *yaml.Node, key string, value string, headComment st
 	}
 	valueNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value, Style: yaml.DoubleQuotedStyle}
 	mapping.Content = append(mapping.Content, keyNode, valueNode)
+}
+
+func setStringListValue(mapping *yaml.Node, key string, values []string, headComment string) {
+	newSeq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	for _, v := range values {
+		newSeq.Content = append(newSeq.Content, &yaml.Node{
+			Kind:  yaml.ScalarNode,
+			Tag:   "!!str",
+			Value: v,
+		})
+	}
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		keyNode := mapping.Content[i]
+		valueNode := mapping.Content[i+1]
+		if keyNode.Value != key {
+			continue
+		}
+		valueNode.Kind = newSeq.Kind
+		valueNode.Tag = newSeq.Tag
+		valueNode.Style = 0
+		valueNode.Content = newSeq.Content
+		valueNode.Value = ""
+		return
+	}
+
+	keyNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}
+	if headComment != "" {
+		keyNode.HeadComment = headComment
+	}
+	mapping.Content = append(mapping.Content, keyNode, newSeq)
 }

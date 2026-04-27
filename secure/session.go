@@ -228,9 +228,6 @@ func (h *Handshaker) ResponderHandshake(writeMsg func([]byte) error, readMsg fun
 		offset = 4
 	}
 	clientEphPub, clientStatic := msg1[offset:offset+32], msg1[offset+32:offset+64]
-	if h.peerStatic != nil && len(h.peerStatic) == 32 && string(clientStatic) != string(h.peerStatic) {
-		return nil, nil, fmt.Errorf("peer public key not allowed")
-	}
 	ephPriv := make([]byte, 32)
 	if _, err = io.ReadFull(rand.Reader, ephPriv); err != nil {
 		return nil, nil, err
