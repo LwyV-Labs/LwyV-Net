@@ -24,7 +24,7 @@ LwyV-Net 主要解决“设备都在公网、网络环境复杂、但又希望�
 
 - ✅ TUN 虚拟网卡接入（三层 IP 收发）
 - ✅ KCP 隧道通信（客户端 ↔ 服务端）
-- ✅ Noise IK 风格握手与会话加密（X25519 + HKDF-SHA256 + ChaCha20-Poly1305）
+- ✅ Noise 风格握手与会话加密（X25519 + HKDF-SHA256 + ChaCha20-Poly1305）
 - ✅ 虚拟 DHCP 自动分配地址
 - ✅ 断线重连与会话轮换
 - ✅ 可选代理模式（客户端默认流量可经隧道转发，服务端可做网关/NAT）
@@ -74,7 +74,7 @@ go build -o build/lwyv-net .
 ./build/lwyv-net genkey
 ```
 
-把输出的 `publicKey` 互相填入对端 `config.yaml` 的 `common.peerPublicKeys`。
+把客户端 `publicKey` 填入服务端 `config.yaml` 的 `common.peerPublicKeys`（服务端白名单）。客户端不再校验服务端公钥。
 
 ### 4) 启动服务端
 
