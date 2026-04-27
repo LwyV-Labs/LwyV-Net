@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -33,10 +34,20 @@ type Client struct {
 	tunPacketChan chan []byte
 	// keyID：每次握手递增，用于会话轮转标识。
 	keyID atomic.Uint32
+	// running/connected 用于对外暴露连接状态（Web 控制台）。
+	running   atomic.Bool
+	connected atomic.Bool
+	stopCh    chan struct{}
+	stopOnce  sync.Once
+	connMu    sync.Mutex
+	conn      net.Conn
 }
 
 func NewClient() *Client {
-	return &Client{tunPacketChan: make(chan []byte, tunPacketQueueSize)}
+	return &Client{
+		tunPacketChan: make(chan []byte, tunPacketQueueSize),
+		stopCh:        make(chan struct{}),
+	}
 }
 
 func StartClient() { NewClient().Start() }
@@ -54,8 +65,9 @@ func (c *Client) Start() {
 
 	c.installCleanupSignal()
 
+	c.running.Store(true)
+	defer c.running.Store(false)
 	go c.tunToPacketQueue(dev)
-
 	c.startKCP(dev)
 
 }
@@ -73,15 +85,26 @@ func (c *Client) installCleanupSignal() {
 
 func (c *Client) startKCP(dev tun.Device) {
 	for {
+		if c.isStopped() {
+			return
+		}
 		conn, err := kcp.DialWithOptions(Conf.Client.ServerIP, nil, 0, 0)
 		if err != nil {
 			log.Printf("连接服务端失败: %v，1秒后重试", err)
-			time.Sleep(time.Second)
+			select {
+			case <-time.After(time.Second):
+			case <-c.stopCh:
+				return
+			}
 			continue
 		}
+		c.setConn(conn)
+		c.connected.Store(true)
 		log.Printf("已连接服务端: %s", Conf.Client.ServerIP)
 		setupKCPSession(conn)
 		c.runSession(dev, conn)
+		c.connected.Store(false)
+		c.clearConn(conn)
 	}
 }
 
@@ -110,6 +133,41 @@ func (c *Client) runSession(dev tun.Device, conn net.Conn) {
 	c.clientSendLoop(conn, done, sessionMgr)
 	_ = conn.Close()
 	setup.CleanupClientProxyRouting()
+}
+
+func (c *Client) Stop() {
+	c.stopOnce.Do(func() { close(c.stopCh) })
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	if c.conn != nil {
+		_ = c.conn.Close()
+	}
+}
+
+func (c *Client) IsRunning() bool   { return c.running.Load() }
+func (c *Client) IsConnected() bool { return c.connected.Load() }
+
+func (c *Client) isStopped() bool {
+	select {
+	case <-c.stopCh:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Client) setConn(conn net.Conn) {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	c.conn = conn
+}
+
+func (c *Client) clearConn(conn net.Conn) {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	if c.conn == conn {
+		c.conn = nil
+	}
 }
 
 func (c *Client) initAddress(conn net.Conn, sessionMgr *secure.SessionManager) error {

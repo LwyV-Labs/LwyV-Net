@@ -47,6 +47,7 @@ type Server struct {
 	dhcp        *vdhcp.Manager
 	dhcpMask    string
 	keyID       atomic.Uint32
+	running     atomic.Bool
 }
 
 func NewServer() *Server {
@@ -68,6 +69,8 @@ func (s *Server) Start() {
 	}
 	s.installCleanupSignal()
 
+	s.running.Store(true)
+	defer s.running.Store(false)
 	s.startKCP()
 }
 
@@ -403,4 +406,39 @@ func (s *Server) tunToClients(dev tun.Device) {
 			targetPeer.mu.Unlock()
 		}
 	}
+}
+
+type ConnectedPeerInfo struct {
+	DeviceID      string `json:"deviceID"`
+	VirtualIP     string `json:"virtualIP"`
+	PeerPublicKey string `json:"peerPublicKey"`
+	RemoteAddr    string `json:"remoteAddr"`
+}
+
+type ServerRuntimeStatus struct {
+	Running      bool                `json:"running"`
+	ConnectedNum int                 `json:"connectedNum"`
+	Peers        []ConnectedPeerInfo `json:"peers"`
+}
+
+func (s *Server) SnapshotStatus() ServerRuntimeStatus {
+	status := ServerRuntimeStatus{
+		Running: s.running.Load(),
+	}
+	s.clientTable.RLock()
+	defer s.clientTable.RUnlock()
+	status.ConnectedNum = len(s.clientTable.m)
+	status.Peers = make([]ConnectedPeerInfo, 0, len(s.clientTable.m))
+	for _, peer := range s.clientTable.m {
+		info := ConnectedPeerInfo{
+			DeviceID:      peer.deviceID,
+			VirtualIP:     peer.virtualIP,
+			PeerPublicKey: peer.peerPublicKey,
+		}
+		if peer.conn != nil {
+			info.RemoteAddr = peer.conn.RemoteAddr().String()
+		}
+		status.Peers = append(status.Peers, info)
+	}
+	return status
 }
