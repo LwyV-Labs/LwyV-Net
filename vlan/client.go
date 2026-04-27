@@ -116,6 +116,7 @@ func (c *Client) initAddress(conn net.Conn, sessionMgr *secure.SessionManager) e
 	if err != nil {
 		return err
 	}
+	log.Printf("✅ 客户端已获取 VDHCP 虚拟地址: ip=%s mask=%s", dhcpIP, dhcpMask)
 	if err = setup.ConfigureTunAddress(Conf.Client.IfName, dhcpIP, dhcpMask); err != nil {
 		return fmt.Errorf("配置虚拟网卡 IP 失败: %w", err)
 	}

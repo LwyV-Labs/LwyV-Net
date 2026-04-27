@@ -1,27 +1,27 @@
 # 通用配置
+
 common:
   # Noise IK / ECDH 身份密钥（base64 32 bytes）
-  privateKey: "eMCk80G94X4zuGNFMyfCPM7dZOiQbrCwR8q6G2i2zVk="
+  privateKey: "wfzggGe/u9sU4qLuQ7nTbtO/PhGG6hyiaCcq+JTyjW0="
   # 对端设备长期公钥（base64 32 bytes）。
+
   # - 作为客户端发起 IK 握手时：第 1 项必须是服务端静态公钥；
+
   # - 作为服务端接收连接时：该列表用于白名单校验；为空则放行任意客户端公钥。
   peerPublicKeys: [yUDwzQs7vLSWbdkZ6Yjmc6Mz9Fvc6AZ5+UNLhi9tfFM=]
   mtu: 1250
   proxy: true
   gateway: "172.19.0.254"
   subnetMask: "255.255.255.0"
-
 # 服务端配置
 server:
   port: 9999
   ifName: "LwyV-Gateway"
   egressIf: ""
-
 # 客户端连接配置
 client:
   ifName: "LwyV-NetAdapter"
   serverIP: "154.12.50.135:9999"
-
 # 虚拟DHCP配置
 vdhcp:
   startIP: "172.19.0.10"
