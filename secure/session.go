@@ -170,6 +170,9 @@ func NewHandshaker(identity Identity, peerStatic []byte) *Handshaker {
 }
 
 func (h *Handshaker) InitiatorHandshake(writeMsg func([]byte) error, readMsg func() ([]byte, error), keyID uint32) (*CryptoSession, error) {
+	if len(h.peerStatic) != 32 {
+		return nil, fmt.Errorf("initiator requires server static public key (common.peerPublicKeys[0])")
+	}
 	ephPriv := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, ephPriv); err != nil {
 		return nil, err
@@ -196,6 +199,10 @@ func (h *Handshaker) InitiatorHandshake(writeMsg func([]byte) error, readMsg fun
 	}
 	serverEphPub := msg2[:32]
 
+	es, err := curve25519.X25519(ephPriv, h.peerStatic)
+	if err != nil {
+		return nil, err
+	}
 	se, err := curve25519.X25519(h.identity.Private, serverEphPub)
 	if err != nil {
 		return nil, err
@@ -204,7 +211,7 @@ func (h *Handshaker) InitiatorHandshake(writeMsg func([]byte) error, readMsg fun
 	if err != nil {
 		return nil, err
 	}
-	return deriveSession(keyID, true, se, ee)
+	return deriveSession(keyID, true, es, se, ee)
 }
 
 func (h *Handshaker) ResponderHandshake(writeMsg func([]byte) error, readMsg func() ([]byte, error), keyID uint32) (*CryptoSession, []byte, error) {
@@ -233,6 +240,10 @@ func (h *Handshaker) ResponderHandshake(writeMsg func([]byte) error, readMsg fun
 		return nil, nil, err
 	}
 
+	es, err := curve25519.X25519(h.identity.Private, clientEphPub)
+	if err != nil {
+		return nil, nil, err
+	}
 	se, err := curve25519.X25519(ephPriv, clientStatic)
 	if err != nil {
 		return nil, nil, err
@@ -241,7 +252,7 @@ func (h *Handshaker) ResponderHandshake(writeMsg func([]byte) error, readMsg fun
 	if err != nil {
 		return nil, nil, err
 	}
-	sess, err := deriveSession(keyID, false, se, ee)
+	sess, err := deriveSession(keyID, false, es, se, ee)
 	return sess, clientStatic, err
 }
 
