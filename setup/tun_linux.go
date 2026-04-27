@@ -11,6 +11,9 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
+// TunWriteOffset 是写入 tun.Device 时预留的头部空间（headroom）。
+// Linux 下 wireguard/tun 实现可能会使用前置空间承载附加头（如 virtio net header），
+// 因此这里保留 10 字节可避免不同内核/驱动组合下的写入兼容性问题。
 const TunWriteOffset = 10
 
 func CreateTun(name string, mtu int) (tun.Device, error) {

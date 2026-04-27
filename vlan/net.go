@@ -225,7 +225,7 @@ func maxFramePayload() int {
 
 // writeToTun 写网卡
 func writeToTun(dev tun.Device, pkt []byte) error {
-	// WireGuard 的 tun.Device 写入通常需要预留 offset。
+	// 预留平台相关 headroom（Linux=10，Windows=0），再把 IP 包拷贝到 offset 之后写入。
 	need := setup.TunWriteOffset + len(pkt)
 	buf := tunWriteBufPool.Get().([]byte)
 	if cap(buf) < need {
