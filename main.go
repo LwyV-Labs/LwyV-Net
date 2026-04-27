@@ -2,12 +2,14 @@ package main
 
 import (
 	"NetworkSetup/vlan"
+	"NetworkSetup/webui"
 	"fmt"
 	"log"
 	"os"
 )
 
 const configPath = "config.yaml"
+const webConsoleAddr = ":8080"
 
 func main() {
 	// 启动入口：
@@ -44,12 +46,23 @@ func main() {
 			vlan.InitConfig(configPath, vlan.RunModeClient)
 			vlan.StartClient()
 			return
+		case "web-client":
+			if err := webui.StartClientConsole(configPath, webConsoleAddr); err != nil {
+				log.Fatalf("启动客户端 Web 控制台失败: %v", err)
+			}
+			return
+		case "web-server":
+			if err := webui.StartServerConsole(configPath, webConsoleAddr); err != nil {
+				log.Fatalf("启动服务端 Web 控制台失败: %v", err)
+			}
+			return
 		default:
 			log.Fatal(runType + " is not a valid runType")
 		}
 	}
 
-	// 默认模式：客户端
-	vlan.InitConfig(configPath, vlan.RunModeClient)
-	vlan.StartClient()
+	// 默认模式：web-client
+	if err := webui.StartClientConsole(configPath, webConsoleAddr); err != nil {
+		log.Fatalf("启动客户端 Web 控制台失败: %v", err)
+	}
 }
