@@ -325,7 +325,7 @@ func (s *Server) performHandshake(peer *ClientPeer, initMsg []byte) error {
 	if len(Conf.Common.Identity.Private) == 0 {
 		return fmt.Errorf("common.privateKey is required")
 	}
-	hs := secure.NewHandshaker(Conf.Common.Identity, Conf.Common.PeerStatic)
+	hs := secure.NewHandshaker(Conf.Common.Identity, nil)
 	keyID := s.keyID.Add(1)
 	log.Printf("开始处理客户端认证: remote=%s localKeyID=%d", peer.conn.RemoteAddr(), keyID)
 	session, remotePub, err := hs.ResponderHandshake(
