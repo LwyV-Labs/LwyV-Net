@@ -8,6 +8,8 @@ import (
 	"sync"
 )
 
+var defaultProxyDNS = []string{"1.1.1.1", "8.8.8.8"}
+
 type defaultRouteInfo struct {
 	Gateway string
 	IfName  string
@@ -27,6 +29,7 @@ type clientProxyRouteState struct {
 
 	tunIfName  string
 	tunGateway string
+	dnsApplied bool
 }
 
 var clientProxyRoute clientProxyRouteState
@@ -81,6 +84,12 @@ func SetupClientProxyRouting(serverAddr, tunIfName, tunGateway string) error {
 	}
 
 	log.Printf("✅ 已切换默认路由到TUN: default -> %s dev %s", tunGateway, tunIfName)
+	if err := SetInterfaceDNS(tunIfName, defaultProxyDNS); err != nil {
+		_ = DeleteDefaultRoute(tunIfName, tunGateway)
+		_ = DeleteHostRoute(serverIP, orig.Gateway, origIfRef)
+		return fmt.Errorf("设置TUN DNS失败: %w", err)
+	}
+	log.Printf("✅ 已设置TUN DNS: if=%s dns=%v", tunIfName, defaultProxyDNS)
 
 	clientProxyRoute.active = true
 	clientProxyRoute.serverIP = serverIP
@@ -89,6 +98,7 @@ func SetupClientProxyRouting(serverAddr, tunIfName, tunGateway string) error {
 	clientProxyRoute.origIfIndex = orig.IfIndex
 	clientProxyRoute.tunIfName = tunIfName
 	clientProxyRoute.tunGateway = tunGateway
+	clientProxyRoute.dnsApplied = true
 
 	return nil
 }
@@ -117,6 +127,13 @@ func CleanupClientProxyRoutingLocked() {
 	} else {
 		log.Printf("🧹 已清理TUN默认路由")
 	}
+	if clientProxyRoute.dnsApplied {
+		if err := ResetInterfaceDNS(clientProxyRoute.tunIfName); err != nil {
+			log.Printf("恢复TUN DNS失败: %v", err)
+		} else {
+			log.Printf("🧹 已恢复TUN DNS自动获取")
+		}
+	}
 
 	if err := AddDefaultRoute(origIfRef, clientProxyRoute.origGateway); err != nil {
 		log.Printf("恢复真实默认路由失败: %v", err)
@@ -140,6 +157,7 @@ func CleanupClientProxyRoutingLocked() {
 	clientProxyRoute.origIfIndex = ""
 	clientProxyRoute.tunIfName = ""
 	clientProxyRoute.tunGateway = ""
+	clientProxyRoute.dnsApplied = false
 }
 
 func ResolveServerIPv4(serverAddr string) (string, error) {
