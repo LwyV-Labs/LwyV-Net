@@ -11,7 +11,7 @@ const configPath = "config.yaml"
 
 func main() {
 	// 启动入口：
-	// 1) genkey 不启动客户端/服务端，只生成 Noise IK / ECDH 长期身份密钥并回写配置。
+	// 1) genkey 不启动客户端/服务端，只生成 Noise / ECDH 长期身份密钥并回写配置。
 	// 2) 没有传参时默认按客户端启动。
 	// 3) 传参为 "server" 时按服务端启动；传参为 "client" 时按客户端启动。
 	if len(os.Args) >= 2 {
@@ -31,7 +31,7 @@ func main() {
 			}
 			fmt.Println("✅ 已生成新的本机身份密钥，并写入", configPath)
 			fmt.Println("本机 publicKey:", publicKey)
-			fmt.Println("请把上面的 publicKey 填到对端 config.yaml 的 common.peerPublicKeys[0]")
+			fmt.Println("若对端是服务端，请把上面的 publicKey 填到对端 config.yaml 的 common.peerPublicKeys（服务端白名单）")
 			if peerPublicKey != "" {
 				fmt.Println("✅ 已同时写入 common.peerPublicKeys[0]")
 			}

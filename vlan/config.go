@@ -86,7 +86,7 @@ func InitConfig(path string, mode RunMode) {
 		}
 		log.Printf("✅ 检测到 common.privateKey 为空，已自动生成并写入配置文件: %s", path)
 		log.Printf("本机 publicKey: %s", publicKey)
-		log.Printf("请把该 publicKey 填到对端 config.yaml 的 common.peerPublicKeys[0]")
+		log.Printf("若对端是服务端，请把该 publicKey 填到对端 config.yaml 的 common.peerPublicKeys（服务端白名单）")
 		// 回写后重新加载一次配置，确保内存中的 Conf 与磁盘一致。
 		data, err = os.ReadFile(path)
 		if err != nil {
@@ -117,7 +117,6 @@ func validateConfig(mode RunMode) {
 			log.Fatalf("解析peerPublicKeys[%d]失败: %v", i, err)
 		}
 		if i == 0 {
-			// IK 作为发起方需要预先知道服务端静态公钥，这里约定使用列表首项。
 			Conf.Common.PeerStatic = append([]byte(nil), peer...)
 		}
 		if Conf.Common.PeerStaticSet == nil {
