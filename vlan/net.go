@@ -169,12 +169,22 @@ func readFrame(conn net.Conn, maxPayloadSize int) (*TunnelFrame, error) {
 // writePacket 写包
 func writeFrame(conn net.Conn, packetType PacketType, payload []byte) error {
 	// 和 readFrame 对应，先写总长度，再写 type 和 payload。
+	// 这里避免把 payload 再拷贝到新的大缓冲区，减少内存分配与拷贝开销。
 	frameLen := 1 + len(payload)
-	buf := make([]byte, 4+frameLen)
-	binary.BigEndian.PutUint32(buf[:4], uint32(frameLen))
-	buf[4] = byte(packetType)
-	copy(buf[5:], payload)
+	header := [5]byte{}
+	binary.BigEndian.PutUint32(header[:4], uint32(frameLen))
+	header[4] = byte(packetType)
 
+	if err := writeAll(conn, header[:]); err != nil {
+		return err
+	}
+	if len(payload) == 0 {
+		return nil
+	}
+	return writeAll(conn, payload)
+}
+
+func writeAll(conn net.Conn, buf []byte) error {
 	// net.Conn.Write 可能只写入部分字节，所以循环直到写完。
 	for len(buf) > 0 {
 		n, err := conn.Write(buf)
