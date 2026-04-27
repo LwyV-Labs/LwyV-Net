@@ -8,7 +8,7 @@ common:
   # - 作为客户端发起 IK 握手时：第 1 项必须是服务端静态公钥；
 
   # - 作为服务端接收连接时：该列表用于白名单校验；为空则放行任意客户端公钥。
-  peerPublicKeys: [yUDwzQs7vLSWbdkZ6Yjmc6Mz9Fvc6AZ5+UNLhi9tfFM=]
+  peerPublicKeys: [xGrG5nhO51S8Fg9gvrXOXy+/NcK4qzsPnoQk2cZESWA=]
   mtu: 1250
   proxy: true
   gateway: "172.19.0.254"
@@ -21,7 +21,7 @@ server:
 # 客户端连接配置
 client:
   ifName: "LwyV-NetAdapter"
-  serverIP: "154.12.50.135:9999"
+  serverIP: "64.83.34.53:9999"
 # 虚拟DHCP配置
 vdhcp:
   startIP: "172.19.0.10"

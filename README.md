@@ -165,8 +165,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o build/vlan.bin
 ### 2) 启动服务端
 
 ```bash
-chmod +x build/vlan.bin
-sudo ./build/vlan.bin server
+chmod +x vlan.bin
+./vlan.bin genkey
+sudo ./vlan.bin server
 ```
 
 后台运行（可选）：
