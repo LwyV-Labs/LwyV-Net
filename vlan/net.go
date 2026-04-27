@@ -178,11 +178,11 @@ func writeFrame(conn net.Conn, packetType PacketType, payload []byte) error {
 	binary.BigEndian.PutUint32(header[:4], uint32(frameLen))
 	header[4] = byte(packetType)
 
+	if len(payload) == 0 {
+		return writeAll(conn, header[:])
+	}
 	if err := writeAll(conn, header[:]); err != nil {
 		return err
-	}
-	if len(payload) == 0 {
-		return nil
 	}
 	return writeAll(conn, payload)
 }
@@ -208,10 +208,15 @@ func maxFramePayload() int {
 
 // writeToTun 写网卡
 func writeToTun(dev tun.Device, pkt []byte) error {
-	// WireGuard 的 tun.Device 写入通常需要预留 offset。
+	// offset=0 时可直接写原始包，避免额外分配与拷贝。
+	if setup.TunWriteOffset == 0 {
+		_, err := dev.Write([][]byte{pkt}, 0)
+		return err
+	}
+
+	// 仅在需要 headroom 的平台分配并复制。
 	buf := make([]byte, setup.TunWriteOffset+len(pkt))
 	copy(buf[setup.TunWriteOffset:], pkt)
-
 	_, err := dev.Write([][]byte{buf}, setup.TunWriteOffset)
 	return err
 }

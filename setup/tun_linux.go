@@ -5,16 +5,39 @@ package setup
 import (
 	"NetworkSetup/kit"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
 	"golang.zx2c4.com/wireguard/tun"
+	"golang.org/x/sys/unix"
 )
 
-const TunWriteOffset = 10
+const TunWriteOffset = 0
 
 func CreateTun(name string, mtu int) (tun.Device, error) {
-	return tun.CreateTUN(name, mtu)
+	// 显式使用 IFF_NO_PI 且不启用 IFF_VNET_HDR，统一读写 offset=0 的数据面行为。
+	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	ifr, err := unix.NewIfreq(name)
+	if err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+	ifr.SetUint16(unix.IFF_TUN | unix.IFF_NO_PI)
+	if err = unix.IoctlIfreq(fd, unix.TUNSETIFF, ifr); err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+	if err = unix.SetNonblock(fd, true); err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+
+	return tun.CreateTUNFromFile(os.NewFile(uintptr(fd), "/dev/net/tun"), mtu)
 }
 
 func ConfigureTunAddress(ifName, ip, mask string) error {
