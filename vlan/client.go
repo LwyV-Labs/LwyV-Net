@@ -23,7 +23,9 @@ const (
 	heartbeatInterval  = 5 * time.Second
 	heartbeatFluctuate = 1 * time.Second
 	readTimeout        = 16 * time.Second
-	tunPacketQueueSize = 1024
+	// 读 TUN 与发网络之间的缓冲队列。对 TCP 业务而言，过度丢包会触发重传/拥塞回退，
+	// 体感就是“突发-停顿-突发”，因此这里适当放大队列并配合背压，避免静默丢包。
+	tunPacketQueueSize = 4096
 )
 
 type Client struct {
@@ -167,12 +169,9 @@ func (c *Client) tunToPacketQueue(dev tun.Device) {
 			return
 		}
 		for _, pkt := range packets {
-			select {
-			case c.tunPacketChan <- pkt:
-				// 成功入队。
-			default:
-				// 队列满时丢弃，优先保证主循环不阻塞。
-			}
+			// 队列满时采用背压（阻塞等待），不做静默丢包。
+			// 否则 TCP 会在隧道入口发生周期性丢包，表现为吞吐抖动。
+			c.tunPacketChan <- pkt
 		}
 	}
 }

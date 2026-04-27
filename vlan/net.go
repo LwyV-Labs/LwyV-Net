@@ -128,6 +128,9 @@ func setupKCPSession(conn *kcp.UDPSession) {
 	// - 关闭写延迟
 	// - nodelay 模式
 	// - 增大窗口和缓冲，减少高吞吐时丢包影响
+	// - 开启 stream 模式，让上层可按字节流读取 frame，避免把“分两次 Write(header+payload)”
+	//   误当成两条独立消息，导致读侧抖动/阻塞。
+	conn.SetStreamMode(true)
 	conn.SetWriteDelay(false)
 	conn.SetNoDelay(1, 20, 2, 1)
 	conn.SetWindowSize(1024, 1024)
