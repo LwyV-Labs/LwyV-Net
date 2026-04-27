@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 
 	"github.com/xtaci/kcp-go/v5"
 	"golang.zx2c4.com/wireguard/tun"
@@ -122,6 +123,13 @@ type TunnelFrame struct {
 	IPPacket []byte
 }
 
+var tunWriteBufPool = sync.Pool{
+	New: func() any {
+		// 默认按常见 MTU(1500) + WireGuard 偏移申请；后续会按需要扩容。
+		return make([]byte, setup.TunWriteOffset+1600)
+	},
+}
+
 // setupKCPSession设置KCP
 func setupKCPSession(conn *kcp.UDPSession) {
 	// 这里是 KCP 的“低延迟”参数组：
@@ -178,13 +186,22 @@ func writeFrame(conn net.Conn, packetType PacketType, payload []byte) error {
 	binary.BigEndian.PutUint32(header[:4], uint32(frameLen))
 	header[4] = byte(packetType)
 
-	if err := writeAll(conn, header[:]); err != nil {
-		return err
-	}
 	if len(payload) == 0 {
-		return nil
+		return writeAll(conn, header[:])
 	}
-	return writeAll(conn, payload)
+
+	// 尽量让 header+payload 通过一次 Writev 下发，减少系统调用与锁竞争。
+	buffers := net.Buffers{header[:], payload}
+	for len(buffers) > 0 {
+		n, err := buffers.WriteTo(conn)
+		if err != nil {
+			return err
+		}
+		if n <= 0 {
+			return io.ErrUnexpectedEOF
+		}
+	}
+	return nil
 }
 
 func writeAll(conn net.Conn, buf []byte) error {
@@ -209,10 +226,16 @@ func maxFramePayload() int {
 // writeToTun 写网卡
 func writeToTun(dev tun.Device, pkt []byte) error {
 	// WireGuard 的 tun.Device 写入通常需要预留 offset。
-	buf := make([]byte, setup.TunWriteOffset+len(pkt))
+	need := setup.TunWriteOffset + len(pkt)
+	buf := tunWriteBufPool.Get().([]byte)
+	if cap(buf) < need {
+		buf = make([]byte, need)
+	}
+	buf = buf[:need]
 	copy(buf[setup.TunWriteOffset:], pkt)
 
 	_, err := dev.Write([][]byte{buf}, setup.TunWriteOffset)
+	tunWriteBufPool.Put(buf[:cap(buf)])
 	return err
 }
 
