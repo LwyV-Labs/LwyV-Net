@@ -1,4 +1,4 @@
-package vlan
+package kit
 
 import (
 	"math/rand"

@@ -1,6 +1,6 @@
 //go:build linux
 
-package vlan
+package setup
 
 import (
 	"fmt"
@@ -10,14 +10,13 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-const tunWriteOffset = 10
+const TunWriteOffset = 10
 
-func createTun(name string, mtu int) (tun.Device, error) {
+func CreateTun(name string, mtu int) (tun.Device, error) {
 	return tun.CreateTUN(name, mtu)
 }
 
-func configureTunAddress(ifName, ip, mask string) error {
-	prefix, err := maskToPrefix(mask)
+func ConfigureTunAddress(ifName, ip, prefix int) error {
 	if err != nil {
 		return err
 	}
@@ -31,14 +30,14 @@ func configureTunAddress(ifName, ip, mask string) error {
 	return nil
 }
 
-func allowTunTraffic(ifName string) error {
+func AllowTunTraffic(ifName string) error {
 	return nil
 }
 
-func cleanupTunTraffic() {
+func CleanupTunTraffic() {
 }
 
-func getDefaultRoute() (*defaultRouteInfo, error) {
+func GetDefaultRoute() (*defaultRouteInfo, error) {
 	out, err := exec.Command("sh", "-c", "ip route show default | head -n 1").Output()
 	if err != nil {
 		return nil, fmt.Errorf("获取默认路由失败: %w", err)
@@ -72,7 +71,7 @@ func getDefaultRoute() (*defaultRouteInfo, error) {
 	return info, nil
 }
 
-func addHostRoute(hostIP, gateway, ifName string) error {
+func AddHostRoute(hostIP, gateway, ifName string) error {
 	return exec.Command(
 		"ip", "route", "replace",
 		fmt.Sprintf("%s/32", hostIP),
@@ -81,7 +80,7 @@ func addHostRoute(hostIP, gateway, ifName string) error {
 	).Run()
 }
 
-func deleteHostRoute(hostIP, gateway, ifName string) error {
+func DeleteHostRoute(hostIP, gateway, ifName string) error {
 	return exec.Command(
 		"ip", "route", "del",
 		fmt.Sprintf("%s/32", hostIP),
@@ -90,7 +89,7 @@ func deleteHostRoute(hostIP, gateway, ifName string) error {
 	).Run()
 }
 
-func addDefaultRoute(ifName, gateway string) error {
+func AddDefaultRoute(ifName, gateway string) error {
 	return exec.Command(
 		"ip", "route", "replace",
 		"default",
@@ -99,7 +98,7 @@ func addDefaultRoute(ifName, gateway string) error {
 	).Run()
 }
 
-func deleteDefaultRoute(ifName, gateway string) error {
+func DeleteDefaultRoute(ifName, gateway string) error {
 	return exec.Command(
 		"ip", "route", "del",
 		"default",

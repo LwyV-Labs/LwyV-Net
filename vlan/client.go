@@ -1,7 +1,9 @@
 package vlan
 
 import (
+	"NetworkSetup/kit"
 	"NetworkSetup/secure"
+	"NetworkSetup/setup"
 	"fmt"
 	"log"
 	"net"
@@ -39,14 +41,14 @@ func StartClient() { NewClient().Start() }
 
 func (c *Client) Start() {
 	// 1) 创建 TUN 网卡；2) 放行本机策略；3) 启动收发循环。
-	dev, err := createTun(Conf.Client.IfName, Conf.Common.MTU)
+	dev, err := setup.CreateTun(Conf.Client.IfName, Conf.Common.MTU)
 	if err != nil {
 		log.Fatalf("创建虚拟网卡失败: %v", err)
 	}
 	defer dev.Close()
-	_ = allowTunTraffic(Conf.Client.IfName)
-	defer cleanupTunTraffic()
-	defer cleanupClientProxyRouting()
+	_ = setup.AllowTunTraffic(Conf.Client.IfName)
+	defer setup.CleanupTunTraffic()
+	defer setup.CleanupClientProxyRouting()
 
 	c.installCleanupSignal()
 
@@ -61,8 +63,8 @@ func (c *Client) installCleanupSignal() {
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-ch
-		cleanupClientProxyRouting()
-		cleanupTunTraffic()
+		setup.CleanupClientProxyRouting()
+		setup.CleanupTunTraffic()
 		os.Exit(0)
 	}()
 }
@@ -105,7 +107,7 @@ func (c *Client) runSession(dev tun.Device, conn net.Conn) {
 	// 上行：TUN/心跳 -> 网络
 	c.clientSendLoop(conn, done, sessionMgr)
 	_ = conn.Close()
-	cleanupClientProxyRouting()
+	setup.CleanupClientProxyRouting()
 }
 
 func (c *Client) initAddress(conn net.Conn, sessionMgr *secure.SessionManager) error {
@@ -114,12 +116,12 @@ func (c *Client) initAddress(conn net.Conn, sessionMgr *secure.SessionManager) e
 	if err != nil {
 		return err
 	}
-	if err = configureTunAddress(Conf.Client.IfName, dhcpIP, dhcpMask); err != nil {
+	if err = setup.ConfigureTunAddress(Conf.Client.IfName, dhcpIP, dhcpMask); err != nil {
 		return fmt.Errorf("配置虚拟网卡 IP 失败: %w", err)
 	}
 	if Conf.Common.Proxy {
 		// 代理模式：把默认流量经虚拟网卡导向服务端网关。
-		if err = setupClientProxyRouting(Conf.Client.ServerIP, Conf.Client.IfName, Conf.Common.Gateway); err != nil {
+		if err = setup.SetupClientProxyRouting(Conf.Client.ServerIP, Conf.Client.IfName, Conf.Common.Gateway); err != nil {
 			return fmt.Errorf("客户端代理路由初始化失败: %w", err)
 		}
 	}
@@ -175,7 +177,7 @@ func (c *Client) tunToPacketQueue(dev tun.Device) {
 }
 
 func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr *secure.SessionManager) {
-	ticker := time.NewTicker(RandomInterval(heartbeatInterval, heartbeatFluctuate))
+	ticker := time.NewTicker(kit.RandomInterval(heartbeatInterval, heartbeatFluctuate))
 	defer ticker.Stop()
 	for {
 		select {

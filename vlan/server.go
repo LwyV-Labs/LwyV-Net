@@ -2,6 +2,7 @@ package vlan
 
 import (
 	"NetworkSetup/secure"
+	"NetworkSetup/setup"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -76,7 +77,7 @@ func (s *Server) installCleanupSignal() {
 	go func() {
 		<-ch
 		log.Println("收到退出信号，开始清理服务端网关...")
-		shutdownServerGateway()
+		ShutdownServerGateway()
 		os.Exit(0)
 	}()
 }
@@ -102,11 +103,11 @@ func (s *Server) initGateway() error {
 		ifName = "LwyV-Gateway"
 	}
 	mask := Conf.Common.SubnetMask
-	dev, err := createTun(ifName, Conf.Common.MTU)
+	dev, err := setup.CreateTun(ifName, Conf.Common.MTU)
 	if err != nil {
 		return fmt.Errorf("创建服务端TUN失败: %w", err)
 	}
-	if err = configureTunAddress(ifName, Conf.Common.Gateway, mask); err != nil {
+	if err = setup.ConfigureTunAddress(ifName, Conf.Common.Gateway, mask); err != nil {
 		_ = dev.Close()
 		return fmt.Errorf("配置服务端TUN地址失败: %w", err)
 	}
@@ -122,6 +123,16 @@ func (s *Server) initGateway() error {
 	go s.tunToClients(dev)
 	log.Printf("✅ 服务端网关已启用: if=%s gw=%s/%s", ifName, Conf.Common.Gateway, mask)
 	return nil
+}
+
+func ShutdownServerGateway() {
+	serverTunMu.Lock()
+	if serverTunDev != nil {
+		_ = serverTunDev.Close()
+		serverTunDev = nil
+	}
+	serverTunMu.Unlock()
+
 }
 
 func (s *Server) startKCP() {

@@ -1,6 +1,7 @@
 package vlan
 
 import (
+	"NetworkSetup/setup"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -208,10 +209,10 @@ func maxFramePayload() int {
 // writeToTun 写网卡
 func writeToTun(dev tun.Device, pkt []byte) error {
 	// WireGuard 的 tun.Device 写入通常需要预留 offset。
-	buf := make([]byte, tunWriteOffset+len(pkt))
-	copy(buf[tunWriteOffset:], pkt)
+	buf := make([]byte, setup.TunWriteOffset+len(pkt))
+	copy(buf[setup.TunWriteOffset:], pkt)
 
-	_, err := dev.Write([][]byte{buf}, tunWriteOffset)
+	_, err := dev.Write([][]byte{buf}, setup.TunWriteOffset)
 	return err
 }
 
