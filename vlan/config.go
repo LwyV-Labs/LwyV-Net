@@ -1,6 +1,7 @@
 package vlan
 
 import (
+	"NetworkSetup/kit"
 	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
@@ -122,7 +123,7 @@ func validateConfig(mode RunMode) {
 	if net.ParseIP(Conf.Common.Gateway) == nil {
 		log.Fatalf("非法网关地址: %s", Conf.Common.Gateway)
 	}
-	if _, err := maskToPrefix(Conf.Common.SubnetMask); err != nil {
+	if _, err := kit.MaskToPrefix(Conf.Common.SubnetMask); err != nil {
 		log.Fatalf("非法子网掩码: %s, 错误: %v", Conf.Common.SubnetMask, err)
 	}
 }

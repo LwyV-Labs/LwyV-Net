@@ -1,6 +1,7 @@
 package vlan
 
 import (
+	"NetworkSetup/kit"
 	"fmt"
 	"log"
 	"net"
@@ -30,7 +31,7 @@ func enableServerGatewayNAT(ifName, gatewayIP, mask, egressIf string) error {
 		disableServerGatewayNATLocked()
 	}
 
-	prefix, err := maskToPrefix(mask)
+	prefix, err := kit.MaskToPrefix(mask)
 	if err != nil {
 		return err
 	}

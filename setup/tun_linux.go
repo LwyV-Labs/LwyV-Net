@@ -3,8 +3,8 @@
 package setup
 
 import (
+	"NetworkSetup/kit"
 	"fmt"
-	"net"
 	"os/exec"
 	"strings"
 
@@ -18,7 +18,7 @@ func CreateTun(name string, mtu int) (tun.Device, error) {
 }
 
 func ConfigureTunAddress(ifName, ip, mask string) error {
-	prefix, err := maskToPrefix(mask)
+	prefix, err := kit.MaskToPrefix(mask)
 	if err != nil {
 		return err
 	}
@@ -107,16 +107,4 @@ func DeleteDefaultRoute(ifName, gateway string) error {
 		"via", gateway,
 		"dev", ifName,
 	).Run()
-}
-
-func maskToPrefix(mask string) (int, error) {
-	ip := net.ParseIP(mask).To4()
-	if ip == nil {
-		return 0, fmt.Errorf("非法子网掩码: %s", mask)
-	}
-	ones, bits := net.IPMask(ip).Size()
-	if bits != 32 {
-		return 0, fmt.Errorf("非法子网掩码: %s", mask)
-	}
-	return ones, nil
 }
