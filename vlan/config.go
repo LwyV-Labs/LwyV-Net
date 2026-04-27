@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 
 	"NetworkSetup/secure"
 
@@ -76,6 +77,24 @@ func InitConfig(path string, mode RunMode) {
 	err = yaml.Unmarshal(data, &Conf)
 	if err != nil {
 		log.Fatalf("解析配置文件失败：%v", err)
+	}
+	// 若配置未填写本机私钥，则启动时自动生成并回写配置，避免首次部署手工操作。
+	if strings.TrimSpace(Conf.Common.PrivateKey) == "" {
+		publicKey, genErr := GenerateAndWriteKeys(path, "")
+		if genErr != nil {
+			log.Fatalf("common.privateKey为空且自动初始化失败: %v", genErr)
+		}
+		log.Printf("✅ 检测到 common.privateKey 为空，已自动生成并写入配置文件: %s", path)
+		log.Printf("本机 publicKey: %s", publicKey)
+		log.Printf("请把该 publicKey 填到对端 config.yaml 的 common.peerPublicKeys[0]")
+		// 回写后重新加载一次配置，确保内存中的 Conf 与磁盘一致。
+		data, err = os.ReadFile(path)
+		if err != nil {
+			log.Fatalf("重新加载配置文件失败：%v", err)
+		}
+		if err = yaml.Unmarshal(data, &Conf); err != nil {
+			log.Fatalf("重新解析配置文件失败：%v", err)
+		}
 	}
 
 	// 第三步：做字段合法性校验 + 衍生字段填充（例如密钥解析）。
