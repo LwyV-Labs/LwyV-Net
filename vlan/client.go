@@ -23,6 +23,7 @@ const (
 	heartbeatInterval  = 5 * time.Second
 	heartbeatFluctuate = 1 * time.Second
 	readTimeout        = 16 * time.Second
+	vdhcpTimeout       = 8 * time.Second
 	// 读 TUN 与发网络之间的缓冲队列。对 TCP 业务而言，过度丢包会触发重传/拥塞回退，
 	// 体感就是“突发-停顿-突发”，因此这里适当放大队列并配合背压，避免静默丢包。
 	tunPacketQueueSize = 4096
@@ -137,14 +138,18 @@ func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) 
 	if err != nil {
 		return "", "", err
 	}
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	if err = c.writeSecureFrame(conn, sessionMgr, PacketTypeVDHCP, discover); err != nil {
 		log.Printf("发送DHCP Discover失败: %v", err)
 		return "", "", err
 	}
+	_ = conn.SetWriteDeadline(time.Time{})
+	_ = conn.SetReadDeadline(time.Now().Add(vdhcpTimeout))
+	defer conn.SetReadDeadline(time.Time{})
 	frame, err := readFrame(conn, maxFramePayload())
 	if err != nil {
 		log.Printf("读取DHCP Offer失败: err=%v", err)
-		return "", "", fmt.Errorf("读取DHCP OFFER失败")
+		return "", "", fmt.Errorf("读取DHCP OFFER失败: %w", err)
 	}
 	if frame.Type != PacketTypeSecure {
 		log.Printf("读取DHCP Offer失败: 非预期类型=%d", frame.Type)

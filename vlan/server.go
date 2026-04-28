@@ -168,6 +168,7 @@ func (s *Server) handleClient(conn net.Conn) {
 		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 		frame, err := readFrame(conn, maxFramePayload())
 		if err != nil {
+			log.Printf("客户端读连接失败并断开: remote=%s device=%s err=%v", conn.RemoteAddr(), peer.deviceID, err)
 			return
 		}
 		switch frame.Type {
