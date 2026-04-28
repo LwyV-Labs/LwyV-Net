@@ -36,13 +36,13 @@ type ClientPeer struct {
 	sendCloseOnce sync.Once
 }
 
-type KcpClient struct {
+type PeerTable struct {
 	sync.RWMutex
 	m map[string]*ClientPeer
 }
 
 type Server struct {
-	clientTable *KcpClient
+	clientTable *PeerTable
 	tunDev      tun.Device
 	tunMu       sync.Mutex
 	dhcp        *vdhcp.Manager
@@ -57,7 +57,7 @@ const (
 )
 
 func NewServer() *Server {
-	return &Server{clientTable: &KcpClient{m: make(map[string]*ClientPeer)}}
+	return &Server{clientTable: &PeerTable{m: make(map[string]*ClientPeer)}}
 }
 
 func StartServer() { NewServer().Start() }
@@ -66,7 +66,7 @@ func (s *Server) Start() {
 	// 启动顺序：
 	// 1) 初始化地址池（vDHCP）
 	// 2) 如开启代理则初始化服务端网关/NAT
-	// 3) 启动 KCP 监听
+	// 3) 启动 UDP 监听
 	if err := s.initVDHCP(); err != nil {
 		log.Fatalf("初始化虚拟DHCP失败: %v", err)
 	}
@@ -75,7 +75,7 @@ func (s *Server) Start() {
 	}
 	s.installCleanupSignal()
 
-	s.startKCP()
+	s.startUDP()
 }
 
 func (s *Server) installCleanupSignal() {
@@ -110,7 +110,7 @@ func (s *Server) initGateway() error {
 		ifName = "LwyV-Gateway"
 	}
 	mask := Conf.Common.SubnetMask
-	dev, err := setup.CreateTun(ifName, Conf.Common.MTU)
+	dev, err := setup.CreateTun(ifName, tunPayloadMTU())
 	if err != nil {
 		return fmt.Errorf("创建服务端TUN失败: %w", err)
 	}
@@ -143,7 +143,7 @@ func ShutdownServerGateway() {
 
 }
 
-func (s *Server) startKCP() {
+func (s *Server) startUDP() {
 	addr := &net.UDPAddr{IP: net.IPv4zero, Port: Conf.Server.Port}
 	udpConn, err := net.ListenUDP("udp", addr)
 	if err != nil {
@@ -453,7 +453,7 @@ func (s *Server) writeToServerTun(pkt []byte) error {
 func (s *Server) tunToClients(dev tun.Device) {
 	for {
 		// 从服务端网关 TUN 读到的数据，按目标 IP 发回对应客户端。
-		packets, err := readFromTun(dev, Conf.Common.MTU)
+		packets, err := readFromTun(dev, tunPayloadMTU())
 		if err != nil {
 			return
 		}

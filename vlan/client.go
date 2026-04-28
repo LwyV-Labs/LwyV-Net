@@ -39,7 +39,7 @@ func StartClient() { NewClient().Start() }
 
 func (c *Client) Start() {
 	// 1) 创建 TUN 网卡；2) 放行本机策略；3) 启动收发循环。
-	dev, err := setup.CreateTun(Conf.Client.IfName, Conf.Common.MTU)
+	dev, err := setup.CreateTun(Conf.Client.IfName, tunPayloadMTU())
 	if err != nil {
 		log.Fatalf("创建虚拟网卡失败: %v", err)
 	}
@@ -51,7 +51,7 @@ func (c *Client) Start() {
 	c.installCleanupSignal()
 
 	go c.tunToPacketQueue(dev)
-	c.startKCP(dev)
+	c.startUDP(dev)
 }
 
 func (c *Client) installCleanupSignal() {
@@ -65,7 +65,7 @@ func (c *Client) installCleanupSignal() {
 	}()
 }
 
-func (c *Client) startKCP(dev tun.Device) {
+func (c *Client) startUDP(dev tun.Device) {
 	for {
 		conn, err := dialUDPFrameConn(Conf.Client.ServerIP)
 		if err != nil {
@@ -160,7 +160,7 @@ func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) 
 
 func (c *Client) tunToPacketQueue(dev tun.Device) {
 	for {
-		packets, err := readFromTun(dev, Conf.Common.MTU)
+		packets, err := readFromTun(dev, tunPayloadMTU())
 		if err != nil {
 			return
 		}
