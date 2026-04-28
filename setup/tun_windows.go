@@ -15,9 +15,6 @@ const (
 	fwRuleOut = "VLAN_NET_ALLOW_ALL_OUT"
 )
 
-// Windows 的 Wintun 路径不需要额外 headroom，直接从 0 偏移写入即可。
-const TunWriteOffset = 0
-
 func RunPowerShell(ps string) error {
 	cmd := exec.Command(
 		"powershell.exe",

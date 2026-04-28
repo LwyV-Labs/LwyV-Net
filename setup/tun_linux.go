@@ -13,8 +13,6 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-const TunWriteOffset = 0
-
 func CreateTun(name string, mtu int) (tun.Device, error) {
 	// 显式使用 IFF_NO_PI 且不启用 IFF_VNET_HDR，统一读写 offset=0 的数据面行为。
 	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC, 0)
