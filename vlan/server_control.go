@@ -19,6 +19,16 @@ func StartManagedServer() bool {
 	return true
 }
 
+func StopManagedServer() bool {
+	serverCtlMu.Lock()
+	s := serverCtl
+	serverCtlMu.Unlock()
+	if s == nil {
+		return false
+	}
+	return s.Stop()
+}
+
 func ManagedServerStatus() ServerRuntimeStatus {
 	serverCtlMu.Lock()
 	s := serverCtl

@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>客户端控制台</title>
+  <style>
+    :root {
+      --bg: #f3f6fb;
+      --card: #ffffff;
+      --primary: #1f6feb;
+      --primary-hover: #1357bd;
+      --danger: #d94848;
+      --danger-hover: #b13333;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --border: #d8e1f0;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+    }
+    .card {
+      width: 100%;
+      max-width: 720px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 12px 28px rgba(31, 41, 55, 0.08);
+      padding: 24px;
+    }
+    h1 { margin: 0 0 8px; font-size: 22px; }
+    .hint { margin: 0 0 18px; color: var(--muted); }
+    .row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+    button {
+      border: none;
+      border-radius: 10px;
+      padding: 10px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+      background: var(--primary);
+      cursor: pointer;
+      transition: .2s ease;
+    }
+    button:hover { background: var(--primary-hover); }
+    .danger { background: var(--danger); }
+    .danger:hover { background: var(--danger-hover); }
+    .panel {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #f9fbff;
+      padding: 12px;
+      margin-top: 10px;
+    }
+    .label { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+    .value { font-weight: 600; word-break: break-all; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <h1>客户端 Web 控制台</h1>
+  <p class="hint">仅保留密钥生成、连接、断开。</p>
+
+  <div class="row">
+    <button onclick="generateKey()">生成新密钥</button>
+    <button onclick="connectVpn()">连接</button>
+    <button class="danger" onclick="disconnectVpn()">断开</button>
+  </div>
+
+  <div class="panel">
+    <div class="label">运行状态</div>
+    <div id="status" class="value">加载中...</div>
+  </div>
+
+  <div class="panel">
+    <div class="label">当前公钥</div>
+    <div id="publicKey" class="value">加载中...</div>
+  </div>
+</div>
+
+<script>
+async function loadKey(){
+  const res = await fetch('/api/key');
+  const data = await res.json();
+  document.getElementById('publicKey').innerText = data.publicKey || '未生成';
+}
+
+async function generateKey(){
+  const res = await fetch('/api/key/generate', { method: 'POST' });
+  if (res.ok) {
+    await loadKey();
+  }
+}
+
+async function connectVpn(){
+  await fetch('/api/connect', { method: 'POST' });
+  await refreshStatus();
+}
+
+async function disconnectVpn(){
+  await fetch('/api/disconnect', { method: 'POST' });
+  await refreshStatus();
+}
+
+async function refreshStatus(){
+  const res = await fetch('/api/status');
+  const data = await res.json();
+  document.getElementById('status').innerText =
+    `运行中: ${data.running} ｜ 已连接: ${data.connected} ｜ 服务端: ${data.serverIP || '-'}`;
+}
+
+setInterval(refreshStatus, 2000);
+loadKey();
+refreshStatus();
+</script>
+</body>
+</html>

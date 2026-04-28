@@ -44,6 +44,8 @@ type Server struct {
 	clientTable *KcpClient
 	tunDev      tun.Device
 	tunMu       sync.Mutex
+	listenerMu  sync.Mutex
+	listener    *kcp.Listener
 	dhcp        *vdhcp.Manager
 	dhcpMask    string
 	keyID       atomic.Uint32
@@ -143,17 +145,61 @@ func (s *Server) startKCP() {
 	if err != nil {
 		log.Fatalf("KCP服务端启动失败: %v", err)
 	}
+	s.listenerMu.Lock()
+	s.listener = listener
+	s.listenerMu.Unlock()
 	defer listener.Close()
+	defer func() {
+		s.listenerMu.Lock()
+		s.listener = nil
+		s.listenerMu.Unlock()
+	}()
 	log.Printf("✅ KCP 服务端启动成功，监听UDP :%d", Conf.Server.Port)
 	for {
 		conn, err := listener.AcceptKCP()
 		if err != nil {
+			if !s.running.Load() {
+				return
+			}
 			log.Printf("接受连接失败: %v", err)
 			continue
 		}
 		setupKCPSession(conn)
 		go s.handleClient(conn)
 	}
+}
+
+func (s *Server) Stop() bool {
+	if !s.running.Load() {
+		return false
+	}
+	s.running.Store(false)
+
+	s.listenerMu.Lock()
+	if s.listener != nil {
+		_ = s.listener.Close()
+	}
+	s.listenerMu.Unlock()
+
+	s.clientTable.Lock()
+	for _, peer := range s.clientTable.m {
+		if peer.conn != nil {
+			_ = peer.conn.Close()
+		}
+	}
+	s.clientTable.m = make(map[string]*ClientPeer)
+	s.clientTable.Unlock()
+
+	s.tunMu.Lock()
+	if s.tunDev != nil {
+		_ = s.tunDev.Close()
+		s.tunDev = nil
+	}
+	s.tunMu.Unlock()
+
+	ShutdownServerGateway()
+	disableServerGatewayNAT()
+	return true
 }
 
 func (s *Server) handleClient(conn net.Conn) {
