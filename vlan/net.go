@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"time"
 
 	"github.com/xtaci/kcp-go/v5"
 	"golang.zx2c4.com/wireguard/tun"
@@ -121,6 +122,8 @@ type TunnelFrame struct {
 	IPPacket []byte
 }
 
+const defaultReadFrameTimeout = 16 * time.Second
+
 // setupKCPSession设置KCP
 func setupKCPSession(conn *kcp.UDPSession) {
 	// 这里是 KCP 的“低延迟”参数组：
@@ -140,9 +143,12 @@ func setupKCPSession(conn *kcp.UDPSession) {
 }
 
 // readPacket 读包
-func readFrame(conn net.Conn, maxPayloadSize int) (*TunnelFrame, error) {
+func readFrame(conn net.Conn, maxPayloadSize int, timeout time.Duration) (*TunnelFrame, error) {
 	// 协议格式：
 	// [4字节长度][1字节Type][N字节Payload]
+	if timeout > 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	}
 	lenBuf := make([]byte, 4)
 	if _, err := io.ReadFull(conn, lenBuf); err != nil {
 		return nil, err
