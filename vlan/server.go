@@ -407,11 +407,10 @@ func (s *Server) performHandshake(peer *ClientPeer, initMsg []byte) error {
 }
 
 func isPeerStaticAllowed(remotePub []byte) bool {
-	allowed := Conf.Common.PeerStaticSet
-	if len(allowed) == 0 {
+	if len(allowedPeerStaticSet) == 0 {
 		return true
 	}
-	_, ok := allowed[string(remotePub)]
+	_, ok := allowedPeerStaticSet[string(remotePub)]
 	return ok
 }
 
