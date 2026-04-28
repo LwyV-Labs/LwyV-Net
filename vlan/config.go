@@ -2,7 +2,6 @@ package vlan
 
 import (
 	"NetworkSetup/kit"
-	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
@@ -27,15 +26,14 @@ type Config struct {
 
 // CommonConfig 通用配置
 type CommonConfig struct {
-	PrivateKey     string              `yaml:"privateKey"`
-	PeerPublicKeys []string            `yaml:"peerPublicKeys"`
-	Identity       secure.Identity     `yaml:"-"`
-	PeerStatic     []byte              `yaml:"-"`
-	PeerStaticSet  map[string]struct{} `yaml:"-"`
-	MTU            int                 `yaml:"mtu"`
-	Proxy          bool                `yaml:"proxy"`
-	Gateway        string              `yaml:"gateway"`
-	SubnetMask     string              `yaml:"subnetMask"`
+	PrivateKey     string          `yaml:"privateKey"`
+	PeerPublicKeys []string        `yaml:"peerPublicKeys"`
+	Identity       secure.Identity `yaml:"-"`
+	PeerStatic     []byte          `yaml:"-"`
+	MTU            int             `yaml:"mtu"`
+	Proxy          bool            `yaml:"proxy"`
+	Gateway        string          `yaml:"gateway"`
+	SubnetMask     string          `yaml:"subnetMask"`
 }
 
 // ServerConfig 服务端配置
@@ -58,6 +56,7 @@ type VDHCPConfig struct {
 }
 
 var Conf Config
+var allowedPeerStaticSet map[string]struct{}
 
 type RunMode string
 
@@ -120,10 +119,10 @@ func validateConfig(mode RunMode) {
 			// IK 作为发起方需要预先知道服务端静态公钥，这里约定使用列表首项。
 			Conf.Common.PeerStatic = append([]byte(nil), peer...)
 		}
-		if Conf.Common.PeerStaticSet == nil {
-			Conf.Common.PeerStaticSet = make(map[string]struct{})
+		if allowedPeerStaticSet == nil {
+			allowedPeerStaticSet = make(map[string]struct{})
 		}
-		Conf.Common.PeerStaticSet[string(peer)] = struct{}{}
+		allowedPeerStaticSet[string(peer)] = struct{}{}
 	}
 
 	if mode == RunModeServer {
@@ -160,16 +159,13 @@ func GenerateAndWriteKeys(path string, peerPublicKey string) (publicKey string, 
 		return "", err
 	}
 
-	if err := validateBase64Key("generated privateKey", privateKey); err != nil {
+	if _, err := secure.ParsePrivateKey(privateKey); err != nil {
 		return "", err
 	}
-	if err := validateBase64Key("generated publicKey", publicKey); err != nil {
+	if _, err := secure.ParsePublicKey(publicKey); err != nil {
 		return "", err
 	}
 	if peerPublicKey != "" {
-		if err := validateBase64Key("peerPublicKey", peerPublicKey); err != nil {
-			return "", err
-		}
 		if _, err := secure.ParsePublicKey(peerPublicKey); err != nil {
 			return "", fmt.Errorf("peerPublicKey非法: %w", err)
 		}
@@ -192,152 +188,34 @@ func generateNoiseKeyPair() (privateKey string, publicKey string, err error) {
 		nil
 }
 
-func validateBase64Key(name string, value string) error {
-	raw, err := base64.StdEncoding.DecodeString(value)
-	if err != nil {
-		return fmt.Errorf("%s不是合法base64: %w", name, err)
-	}
-	if len(raw) != 32 {
-		return fmt.Errorf("%s长度错误: got %d bytes, want 32 bytes", name, len(raw))
-	}
-	return nil
-}
-
 func writeKeysToConfig(path string, privateKey string, peerPublicKey string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("读取配置文件失败: %w", err)
 	}
 
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return fmt.Errorf("解析配置文件失败: %w", err)
 	}
-
-	rootMap, err := rootMappingNode(&root)
-	if err != nil {
-		return err
-	}
-	common, err := ensureMappingValue(rootMap, "common")
-	if err != nil {
-		return err
-	}
-
 	if privateKey != "" {
-		setStringValue(common, "privateKey", privateKey, "Noise IK / ECDH 身份密钥（base64 32 bytes）")
+		cfg.Common.PrivateKey = privateKey
 	}
 	if peerPublicKey != "" {
-		setStringListValue(common, "peerPublicKeys", []string{peerPublicKey}, "对端设备长期公钥白名单（base64 32 bytes）")
+		cfg.Common.PeerPublicKeys = []string{peerPublicKey}
 	}
 
-	var buf bytes.Buffer
-	encoder := yaml.NewEncoder(&buf)
-	encoder.SetIndent(2)
-	if err := encoder.Encode(&root); err != nil {
-		_ = encoder.Close()
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
 		return fmt.Errorf("编码配置文件失败: %w", err)
-	}
-	if err := encoder.Close(); err != nil {
-		return fmt.Errorf("关闭YAML编码器失败: %w", err)
 	}
 
 	perm := os.FileMode(0644)
 	if info, err := os.Stat(path); err == nil {
 		perm = info.Mode().Perm()
 	}
-	if err := os.WriteFile(path, buf.Bytes(), perm); err != nil {
+	if err := os.WriteFile(path, out, perm); err != nil {
 		return fmt.Errorf("写入配置文件失败: %w", err)
 	}
 	return nil
-}
-
-func rootMappingNode(root *yaml.Node) (*yaml.Node, error) {
-	if root.Kind == 0 {
-		root.Kind = yaml.DocumentNode
-		root.Content = []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}
-	}
-	if root.Kind != yaml.DocumentNode {
-		return nil, fmt.Errorf("配置文件根节点必须是YAML文档")
-	}
-	if len(root.Content) == 0 {
-		root.Content = []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}
-	}
-	if root.Content[0].Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("配置文件根节点必须是map")
-	}
-	return root.Content[0], nil
-}
-
-func ensureMappingValue(mapping *yaml.Node, key string) (*yaml.Node, error) {
-	if mapping.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("节点%s的父级不是map", key)
-	}
-	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		keyNode := mapping.Content[i]
-		valueNode := mapping.Content[i+1]
-		if keyNode.Value != key {
-			continue
-		}
-		if valueNode.Kind != yaml.MappingNode {
-			return nil, fmt.Errorf("%s必须是map", key)
-		}
-		return valueNode, nil
-	}
-
-	keyNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}
-	valueNode := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	mapping.Content = append(mapping.Content, keyNode, valueNode)
-	return valueNode, nil
-}
-
-func setStringValue(mapping *yaml.Node, key string, value string, headComment string) {
-	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		keyNode := mapping.Content[i]
-		valueNode := mapping.Content[i+1]
-		if keyNode.Value != key {
-			continue
-		}
-		valueNode.Kind = yaml.ScalarNode
-		valueNode.Tag = "!!str"
-		valueNode.Value = value
-		valueNode.Style = yaml.DoubleQuotedStyle
-		return
-	}
-
-	keyNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}
-	if headComment != "" {
-		keyNode.HeadComment = headComment
-	}
-	valueNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value, Style: yaml.DoubleQuotedStyle}
-	mapping.Content = append(mapping.Content, keyNode, valueNode)
-}
-
-func setStringListValue(mapping *yaml.Node, key string, values []string, headComment string) {
-	newSeq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
-	for _, v := range values {
-		newSeq.Content = append(newSeq.Content, &yaml.Node{
-			Kind:  yaml.ScalarNode,
-			Tag:   "!!str",
-			Value: v,
-		})
-	}
-	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		keyNode := mapping.Content[i]
-		valueNode := mapping.Content[i+1]
-		if keyNode.Value != key {
-			continue
-		}
-		valueNode.Kind = newSeq.Kind
-		valueNode.Tag = newSeq.Tag
-		valueNode.Style = 0
-		valueNode.Content = newSeq.Content
-		valueNode.Value = ""
-		return
-	}
-
-	keyNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}
-	if headComment != "" {
-		keyNode.HeadComment = headComment
-	}
-	mapping.Content = append(mapping.Content, keyNode, newSeq)
 }
