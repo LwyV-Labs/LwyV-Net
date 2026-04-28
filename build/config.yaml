@@ -9,7 +9,7 @@ common:
 
   # - 作为服务端接收连接时：该列表用于白名单校验；为空则放行任意客户端公钥。
   peerPublicKeys: ["Y/EjzpsbPnYd8tVxXWFkxelus/a+XpT/+dvkncQATng="]
-  mtu: 1000
+  mtu: 1100
   proxy: true
   gateway: "172.19.0.254"
   subnetMask: "255.255.255.0"

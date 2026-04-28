@@ -10,7 +10,7 @@ import (
 
 const (
 	udpPacketBufferSize = 64 * 1024
-	udpPeerQueueSize    = 8192
+	udpPeerQueueSize    = 128 * 1024
 )
 
 type udpTimeoutError struct{}
