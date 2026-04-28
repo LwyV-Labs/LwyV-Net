@@ -141,14 +141,12 @@ func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) 
 	if err != nil {
 		return "", "", err
 	}
-	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err = c.writeSecureFrame(conn, sessionMgr, PacketTypeVDHCP, discover); err != nil {
 		log.Printf("发送DHCP Discover失败: %v", err)
 		return "", "", err
 	}
-	_ = conn.SetWriteDeadline(time.Time{})
 	_ = conn.SetReadDeadline(time.Now().Add(vdhcpTimeout))
-	defer conn.SetReadDeadline(time.Time{})
 	frame, err := readFrame(conn, maxFramePayload())
 	if err != nil {
 		log.Printf("读取DHCP Offer失败: err=%v", err)
