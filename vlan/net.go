@@ -185,7 +185,6 @@ func maxFramePayload() int {
 
 // writeToTun 写网卡
 func writeToTun(dev tun.Device, pkt []byte) error {
-	fixIPv4Checksums(pkt)
 	_, err := dev.Write([][]byte{pkt}, 0)
 	return err
 }
@@ -221,95 +220,4 @@ func readFromTun(dev tun.Device, mtu int) ([][]byte, error) {
 	}
 
 	return packets, nil
-}
-
-func fixIPv4Checksums(pkt []byte) {
-	if len(pkt) < 20 {
-		return
-	}
-
-	version := pkt[0] >> 4
-	if version != 4 {
-		return
-	}
-
-	ihl := int(pkt[0]&0x0F) * 4
-	if ihl < 20 || len(pkt) < ihl {
-		return
-	}
-
-	totalLen := int(binary.BigEndian.Uint16(pkt[2:4]))
-	if totalLen <= 0 || totalLen > len(pkt) {
-		totalLen = len(pkt)
-	}
-	if totalLen < ihl {
-		return
-	}
-
-	// 修 IPv4 header checksum
-	pkt[10] = 0
-	pkt[11] = 0
-	ipSum := checksum16(pkt[:ihl])
-	binary.BigEndian.PutUint16(pkt[10:12], ipSum)
-
-	proto := pkt[9]
-	l4 := pkt[ihl:totalLen]
-
-	switch proto {
-	case 6: // TCP
-		if len(l4) < 20 {
-			return
-		}
-		l4[16] = 0
-		l4[17] = 0
-		sum := transportChecksumIPv4(pkt[12:16], pkt[16:20], proto, l4)
-		binary.BigEndian.PutUint16(l4[16:18], sum)
-
-	case 17: // UDP
-		if len(l4) < 8 {
-			return
-		}
-		l4[6] = 0
-		l4[7] = 0
-		sum := transportChecksumIPv4(pkt[12:16], pkt[16:20], proto, l4)
-
-		// IPv4 UDP checksum 为 0 表示不校验，但我们这里主动填正确值
-		if sum == 0 {
-			sum = 0xffff
-		}
-		binary.BigEndian.PutUint16(l4[6:8], sum)
-	}
-}
-
-func transportChecksumIPv4(src, dst []byte, proto byte, payload []byte) uint16 {
-	pseudoLen := 12 + len(payload)
-	buf := make([]byte, pseudoLen)
-
-	copy(buf[0:4], src)
-	copy(buf[4:8], dst)
-	buf[8] = 0
-	buf[9] = proto
-	binary.BigEndian.PutUint16(buf[10:12], uint16(len(payload)))
-	copy(buf[12:], payload)
-
-	return checksum16(buf)
-}
-
-func checksum16(data []byte) uint16 {
-	var sum uint32
-
-	for len(data) >= 2 {
-		sum += uint32(binary.BigEndian.Uint16(data[:2]))
-		data = data[2:]
-	}
-
-	if len(data) == 1 {
-		sum += uint32(data[0]) << 8
-	}
-
-	for (sum >> 16) != 0 {
-		sum = (sum & 0xffff) + (sum >> 16)
-	}
-
-	return ^uint16(sum)
 }
