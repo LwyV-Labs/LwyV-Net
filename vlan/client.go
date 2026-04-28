@@ -22,6 +22,7 @@ const (
 	heartbeatInterval  = 5 * time.Second
 	heartbeatFluctuate = 1 * time.Second
 	tunPacketQueueSize = 4096
+	clientSendWorkers  = 4
 )
 
 type Client struct {
@@ -97,13 +98,17 @@ func (c *Client) runSession(dev tun.Device, conn net.Conn) {
 	}
 	log.Printf("虚拟地址初始化完成，进入收发循环")
 	done := make(chan struct{})
+	sendErr := make(chan error, 1)
 	go func() {
 		defer close(done)
 		// 下行：网络 -> TUN
 		c.connToTun(dev, conn, sessionMgr)
 	}()
+	for i := 0; i < clientSendWorkers; i++ {
+		go c.clientDataSender(conn, done, sessionMgr, sendErr)
+	}
 	// 上行：TUN/心跳 -> 网络
-	c.clientSendLoop(conn, done, sessionMgr)
+	c.clientSendLoop(conn, done, sendErr)
 	_ = conn.Close()
 	setup.CleanupClientProxyRouting()
 }
@@ -172,21 +177,36 @@ func (c *Client) tunToPacketQueue(dev tun.Device) {
 	}
 }
 
-func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr *secure.SessionManager) {
+func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sendErr <-chan error) {
 	ticker := time.NewTicker(kit.RandomInterval(heartbeatInterval, heartbeatFluctuate))
 	defer ticker.Stop()
 	for {
 		select {
 		case <-done:
 			return
+		case <-sendErr:
+			return
 		case <-ticker.C:
 			// 心跳包用于保活与探测链路可用性。
 			if err := writeFrame(conn, PacketTypePing, nil); err != nil {
 				return
 			}
+		}
+	}
+}
+
+func (c *Client) clientDataSender(conn net.Conn, done <-chan struct{}, sessionMgr *secure.SessionManager, sendErr chan<- error) {
+	for {
+		select {
+		case <-done:
+			return
 		case pkt := <-c.tunPacketChan:
-			// 所有业务包都先走会话加密，再发外层 Secure 帧。
+			// 数据包交给多个 worker 并行加密/发送，减少单循环串行瓶颈。
 			if err := c.writeSecureFrame(conn, sessionMgr, PacketTypeIP, pkt); err != nil {
+				select {
+				case sendErr <- err:
+				default:
+				}
 				return
 			}
 		}
