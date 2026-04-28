@@ -36,13 +36,13 @@ type ClientPeer struct {
 	sendCloseOnce sync.Once
 }
 
-type KcpClient struct {
+type PeerTable struct {
 	sync.RWMutex
 	m map[string]*ClientPeer
 }
 
 type Server struct {
-	clientTable *KcpClient
+	clientTable *PeerTable
 	tunDev      tun.Device
 	tunMu       sync.Mutex
 	dhcp        *vdhcp.Manager
@@ -57,7 +57,7 @@ const (
 )
 
 func NewServer() *Server {
-	return &Server{clientTable: &KcpClient{m: make(map[string]*ClientPeer)}}
+	return &Server{clientTable: &PeerTable{m: make(map[string]*ClientPeer)}}
 }
 
 func StartServer() { NewServer().Start() }
@@ -66,7 +66,7 @@ func (s *Server) Start() {
 	// 启动顺序：
 	// 1) 初始化地址池（vDHCP）
 	// 2) 如开启代理则初始化服务端网关/NAT
-	// 3) 启动 KCP 监听
+	// 3) 启动 UDP 监听
 	if err := s.initVDHCP(); err != nil {
 		log.Fatalf("初始化虚拟DHCP失败: %v", err)
 	}
@@ -75,7 +75,7 @@ func (s *Server) Start() {
 	}
 	s.installCleanupSignal()
 
-	s.startKCP()
+	s.startUDP()
 }
 
 func (s *Server) installCleanupSignal() {
@@ -143,7 +143,7 @@ func ShutdownServerGateway() {
 
 }
 
-func (s *Server) startKCP() {
+func (s *Server) startUDP() {
 	addr := &net.UDPAddr{IP: net.IPv4zero, Port: Conf.Server.Port}
 	udpConn, err := net.ListenUDP("udp", addr)
 	if err != nil {

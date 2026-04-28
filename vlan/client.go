@@ -51,7 +51,7 @@ func (c *Client) Start() {
 	c.installCleanupSignal()
 
 	go c.tunToPacketQueue(dev)
-	c.startKCP(dev)
+	c.startUDP(dev)
 }
 
 func (c *Client) installCleanupSignal() {
@@ -65,7 +65,7 @@ func (c *Client) installCleanupSignal() {
 	}()
 }
 
-func (c *Client) startKCP(dev tun.Device) {
+func (c *Client) startUDP(dev tun.Device) {
 	for {
 		conn, err := dialUDPFrameConn(Conf.Client.ServerIP)
 		if err != nil {
