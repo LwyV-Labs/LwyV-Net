@@ -1,4 +1,4 @@
-package vlan
+package setup
 
 import (
 	"NetworkSetup/kit"
@@ -23,7 +23,7 @@ type serverGatewayNATState struct {
 
 var serverNATState serverGatewayNATState
 
-func enableServerGatewayNAT(ifName, gatewayIP, mask, egressIf string) error {
+func EnableServerGatewayNAT(ifName, gatewayIP, mask, egressIf string) error {
 	serverNATState.mu.Lock()
 	defer serverNATState.mu.Unlock()
 
@@ -86,7 +86,7 @@ func enableServerGatewayNAT(ifName, gatewayIP, mask, egressIf string) error {
 	return nil
 }
 
-func disableServerGatewayNAT() {
+func DisableServerGatewayNAT() {
 	serverNATState.mu.Lock()
 	defer serverNATState.mu.Unlock()
 

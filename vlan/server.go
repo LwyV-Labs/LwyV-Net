@@ -54,7 +54,6 @@ const (
 	// 服务端每个客户端连接的下行发送队列大小。
 	// 把“路由决策/读TUN”与“实际网络写入”解耦，避免写阻塞导致周期性卡顿。
 	serverPeerSendQueueSize = 4096
-	serverPeerSendWorkers   = 4
 )
 
 func NewServer() *Server {
@@ -120,7 +119,7 @@ func (s *Server) initGateway() error {
 		_ = dev.Close()
 		return fmt.Errorf("配置服务端TUN地址失败: %w", err)
 	}
-	if err = enableServerGatewayNAT(ifName, Conf.Common.Gateway, mask, Conf.Server.EgressIf); err != nil {
+	if err = setup.EnableServerGatewayNAT(ifName, Conf.Common.Gateway, mask, Conf.Server.EgressIf); err != nil {
 		_ = dev.Close()
 		return fmt.Errorf("配置服务端NAT失败: %w", err)
 	}
@@ -142,7 +141,7 @@ func ShutdownServerGateway() {
 		serverTunDev = nil
 	}
 	serverTunMu.Unlock()
-	disableServerGatewayNAT()
+	setup.DisableServerGatewayNAT()
 }
 
 func (s *Server) startUDP() {
@@ -185,9 +184,7 @@ func (s *Server) startUDP() {
 				sendQueue: make(chan []byte, serverPeerSendQueueSize),
 				sendDone:  make(chan struct{}),
 			}
-			for i := 0; i < serverPeerSendWorkers; i++ {
-				go s.peerSendLoop(peer)
-			}
+			go s.peerSendLoop(peer)
 			peers[key] = peer
 		}
 		peersMu.Unlock()
