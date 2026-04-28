@@ -25,7 +25,6 @@ var (
 
 type ClientPeer struct {
 	conn          net.Conn
-	mu            sync.Mutex
 	peerPublicKey string
 	deviceID      string
 	virtualIP     string
@@ -54,6 +53,7 @@ const (
 	// 服务端每个客户端连接的下行发送队列大小。
 	// 把“路由决策/读TUN”与“实际网络写入”解耦，避免写阻塞导致周期性卡顿。
 	serverPeerSendQueueSize = 4096
+	serverPeerSendWorkers   = 4
 )
 
 func NewServer() *Server {
@@ -200,7 +200,9 @@ func (s *Server) handleClient(conn net.Conn) {
 		sendQueue: make(chan []byte, serverPeerSendQueueSize),
 		sendDone:  make(chan struct{}),
 	}
-	go s.peerSendLoop(peer)
+	for i := 0; i < serverPeerSendWorkers; i++ {
+		go s.peerSendLoop(peer)
+	}
 	defer s.cleanupClientPeer(peer)
 
 	if err := s.performHandshake(peer, nil); err != nil {
@@ -243,9 +245,7 @@ func (s *Server) peerSendLoop(peer *ClientPeer) {
 		case <-peer.sendDone:
 			return
 		case pkt := <-peer.sendQueue:
-			peer.mu.Lock()
 			err := s.writeSecureFrame(peer, PacketTypeIP, pkt)
-			peer.mu.Unlock()
 			if err != nil {
 				return
 			}
@@ -273,8 +273,6 @@ func (s *Server) cleanupClientPeer(peer *ClientPeer) {
 }
 
 func (s *Server) handlePing(peer *ClientPeer) bool {
-	peer.mu.Lock()
-	defer peer.mu.Unlock()
 	return writeFrame(peer.conn, PacketTypePong, nil) == nil
 }
 
@@ -308,18 +306,14 @@ func (s *Server) handleVDHCP(peer *ClientPeer, pkt []byte) {
 	if err != nil {
 		// 地址池耗尽时返回 NAK。
 		nak, _ := vdhcp.EncodeNak(err.Error())
-		peer.mu.Lock()
 		_ = s.writeSecureFrame(peer, PacketTypeVDHCP, nak)
-		peer.mu.Unlock()
 		return
 	}
 	offer, err := vdhcp.EncodeOffer(ip, s.dhcpMask, Conf.Common.Gateway)
 	if err != nil {
 		return
 	}
-	peer.mu.Lock()
 	err = s.writeSecureFrame(peer, PacketTypeVDHCP, offer)
-	peer.mu.Unlock()
 	if err != nil {
 		return
 	}

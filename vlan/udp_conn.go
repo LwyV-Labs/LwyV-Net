@@ -27,8 +27,6 @@ type udpFrameConn struct {
 	readMu  sync.Mutex
 	readBuf []byte
 
-	writeMu sync.Mutex
-
 	deadlineMu   sync.Mutex
 	readDeadline time.Time
 
@@ -149,9 +147,6 @@ func (c *udpFrameConn) Write(p []byte) (int, error) {
 		return 0, net.ErrClosed
 	default:
 	}
-
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
 
 	var (
 		n   int
