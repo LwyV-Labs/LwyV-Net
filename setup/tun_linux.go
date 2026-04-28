@@ -9,8 +9,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"golang.zx2c4.com/wireguard/tun"
 	"golang.org/x/sys/unix"
+	"golang.zx2c4.com/wireguard/tun"
 )
 
 const TunWriteOffset = 0
@@ -53,6 +53,10 @@ func ConfigureTunAddress(ifName, ip, mask string) error {
 		return err
 	}
 	return nil
+}
+
+func SetInterfaceMTU(ifName string, mtu int) error {
+	return exec.Command("ip", "link", "set", "dev", ifName, "mtu", fmt.Sprintf("%d", mtu)).Run()
 }
 
 func AllowTunTraffic(ifName string) error {
