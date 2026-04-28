@@ -15,7 +15,6 @@ import (
 
 	"NetworkSetup/vdhcp"
 
-	kcp "github.com/xtaci/kcp-go/v5"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -68,15 +67,17 @@ func (c *Client) installCleanupSignal() {
 
 func (c *Client) startKCP(dev tun.Device) {
 	for {
-		conn, err := kcp.DialWithOptions(Conf.Client.ServerIP, nil, 0, 0)
+		conn, err := dialUDPFrameConn(Conf.Client.ServerIP)
 		if err != nil {
-			log.Printf("连接服务端失败: %v，1秒后重试", err)
+			log.Printf("连接UDP服务端失败: %v，1秒后重试", err)
 			time.Sleep(time.Second)
 			continue
 		}
-		log.Printf("已连接服务端: %s", Conf.Client.ServerIP)
-		setupKCPSession(conn)
+		log.Printf("已连接UDP服务端: %s", Conf.Client.ServerIP)
+
 		c.runSession(dev, conn)
+
+		time.Sleep(time.Second)
 	}
 }
 

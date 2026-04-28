@@ -19,6 +19,8 @@ import (
 const (
 	MaxHandshakeMsgSize = 1024
 	RekeyInterval       = 120 * time.Second
+
+	replayWindowSize uint64 = 4096
 )
 
 var protocolName = []byte("lwyv-net-ik-v1")
@@ -62,10 +64,13 @@ func DeviceIDFromPublicKey(pub []byte) string {
 type CryptoSession struct {
 	keyID       uint32
 	sendCounter uint64
-	recvMax     uint64
-	sendAEAD    cipherAead
-	recvAEAD    cipherAead
-	recvMu      sync.Mutex
+
+	recvMax  uint64
+	recvSeen map[uint64]struct{}
+	recvMu   sync.Mutex
+
+	sendAEAD cipherAead
+	recvAEAD cipherAead
 }
 
 type cipherAead interface {
@@ -83,7 +88,12 @@ func NewSession(keyID uint32, sendKey, recvKey []byte) (*CryptoSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &CryptoSession{keyID: keyID, sendAEAD: send, recvAEAD: recv}, nil
+	return &CryptoSession{
+		keyID:    keyID,
+		sendAEAD: send,
+		recvAEAD: recv,
+		recvSeen: make(map[uint64]struct{}, replayWindowSize),
+	}, nil
 }
 
 func (s *CryptoSession) KeyID() uint32 { return s.keyID }
@@ -106,24 +116,61 @@ func (s *CryptoSession) Decrypt(pkt []byte) (byte, []byte, error) {
 	if len(pkt) < 13 {
 		return 0, nil, fmt.Errorf("secure payload too short")
 	}
+
 	head := pkt[:13]
 	counter := binary.BigEndian.Uint64(head[4:12])
-
-	s.recvMu.Lock()
-	if counter <= s.recvMax {
-		s.recvMu.Unlock()
-		return 0, nil, fmt.Errorf("replayed packet counter=%d", counter)
+	if counter == 0 {
+		return 0, nil, fmt.Errorf("invalid packet counter=0")
 	}
-	s.recvMax = counter
-	s.recvMu.Unlock()
 
 	nonce := make([]byte, s.recvAEAD.NonceSize())
 	binary.BigEndian.PutUint64(nonce[len(nonce)-8:], counter)
+
 	plain, err := s.recvAEAD.Open(nil, nonce, pkt[13:], head)
 	if err != nil {
 		return 0, nil, err
 	}
+
+	s.recvMu.Lock()
+	if !s.acceptCounterLocked(counter) {
+		s.recvMu.Unlock()
+		return 0, nil, fmt.Errorf("replayed or too old packet counter=%d max=%d", counter, s.recvMax)
+	}
+	s.recvMu.Unlock()
+
 	return head[12], plain, nil
+}
+
+func (s *CryptoSession) acceptCounterLocked(counter uint64) bool {
+	if s.recvSeen == nil {
+		s.recvSeen = make(map[uint64]struct{}, replayWindowSize)
+	}
+
+	if s.recvMax > 0 && counter+replayWindowSize <= s.recvMax {
+		return false
+	}
+
+	if _, ok := s.recvSeen[counter]; ok {
+		return false
+	}
+
+	if counter > s.recvMax {
+		s.recvMax = counter
+
+		var cutoff uint64
+		if s.recvMax > replayWindowSize {
+			cutoff = s.recvMax - replayWindowSize
+		}
+
+		for c := range s.recvSeen {
+			if c <= cutoff {
+				delete(s.recvSeen, c)
+			}
+		}
+	}
+
+	s.recvSeen[counter] = struct{}{}
+	return true
 }
 
 type SessionManager struct {

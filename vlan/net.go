@@ -7,7 +7,6 @@ import (
 	"net"
 	"time"
 
-	"github.com/xtaci/kcp-go/v5"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -124,38 +123,6 @@ type TunnelFrame struct {
 
 const defaultReadFrameTimeout = 16 * time.Second
 
-// setupKCPSession设置KCP
-func setupKCPSession(conn *kcp.UDPSession) {
-	// 这里是 KCP 的“低延迟”参数组：
-	// - 关闭写延迟
-	// - nodelay 模式
-	// - 增大窗口和缓冲，减少高吞吐时丢包影响
-	// - 开启 stream 模式，让上层可按字节流读取 frame，避免把“分两次 Write(header+payload)”
-	//   误当成两条独立消息，导致读侧抖动/阻塞。
-	//conn.SetStreamMode(true)
-	conn.SetWriteDelay(false)
-	conn.SetNoDelay(1, 20, 2, 1)
-	conn.SetWindowSize(1024, 1024)
-	// 注意：KCP 的 MTU 是“UDP 负载大小”，不是虚拟网卡 MTU。
-	// 之前使用 Conf.Common.MTU + 128，在公网链路上很容易超过路径 MTU，
-	// 触发 UDP 分片后丢包会急剧增大，表现为 iperf 周期性归零/吞吐塌陷。
-	// 这里将 KCP MTU 固定在更稳妥的公网值（上限 1200）。
-	kcpMTU := Conf.Common.MTU
-	if kcpMTU <= 0 {
-		kcpMTU = 1200
-	}
-	if kcpMTU > 1200 {
-		kcpMTU = 1200
-	}
-	if kcpMTU < 576 {
-		kcpMTU = 576
-	}
-	conn.SetMtu(kcpMTU)
-	conn.SetACKNoDelay(true)
-	_ = conn.SetReadBuffer(4 * 1024 * 1024)
-	_ = conn.SetWriteBuffer(4 * 1024 * 1024)
-}
-
 // readPacket 读包
 func readFrame(conn net.Conn, maxPayloadSize int, timeout time.Duration) (*TunnelFrame, error) {
 	// 协议格式：
@@ -211,13 +178,14 @@ func writeAll(conn net.Conn, buf []byte) error {
 
 func maxFramePayload() int {
 	// 为加密头/控制字段预留额外空间，避免边界溢出。
-	return Conf.Common.MTU + 128
+	return Conf.Common.MTU + 256
 }
 
 //=========================== TUN 读写 ===========================
 
 // writeToTun 写网卡
 func writeToTun(dev tun.Device, pkt []byte) error {
+	fixIPv4Checksums(pkt)
 	_, err := dev.Write([][]byte{pkt}, 0)
 	return err
 }
@@ -253,4 +221,95 @@ func readFromTun(dev tun.Device, mtu int) ([][]byte, error) {
 	}
 
 	return packets, nil
+}
+
+func fixIPv4Checksums(pkt []byte) {
+	if len(pkt) < 20 {
+		return
+	}
+
+	version := pkt[0] >> 4
+	if version != 4 {
+		return
+	}
+
+	ihl := int(pkt[0]&0x0F) * 4
+	if ihl < 20 || len(pkt) < ihl {
+		return
+	}
+
+	totalLen := int(binary.BigEndian.Uint16(pkt[2:4]))
+	if totalLen <= 0 || totalLen > len(pkt) {
+		totalLen = len(pkt)
+	}
+	if totalLen < ihl {
+		return
+	}
+
+	// 修 IPv4 header checksum
+	pkt[10] = 0
+	pkt[11] = 0
+	ipSum := checksum16(pkt[:ihl])
+	binary.BigEndian.PutUint16(pkt[10:12], ipSum)
+
+	proto := pkt[9]
+	l4 := pkt[ihl:totalLen]
+
+	switch proto {
+	case 6: // TCP
+		if len(l4) < 20 {
+			return
+		}
+		l4[16] = 0
+		l4[17] = 0
+		sum := transportChecksumIPv4(pkt[12:16], pkt[16:20], proto, l4)
+		binary.BigEndian.PutUint16(l4[16:18], sum)
+
+	case 17: // UDP
+		if len(l4) < 8 {
+			return
+		}
+		l4[6] = 0
+		l4[7] = 0
+		sum := transportChecksumIPv4(pkt[12:16], pkt[16:20], proto, l4)
+
+		// IPv4 UDP checksum 为 0 表示不校验，但我们这里主动填正确值
+		if sum == 0 {
+			sum = 0xffff
+		}
+		binary.BigEndian.PutUint16(l4[6:8], sum)
+	}
+}
+
+func transportChecksumIPv4(src, dst []byte, proto byte, payload []byte) uint16 {
+	pseudoLen := 12 + len(payload)
+	buf := make([]byte, pseudoLen)
+
+	copy(buf[0:4], src)
+	copy(buf[4:8], dst)
+	buf[8] = 0
+	buf[9] = proto
+	binary.BigEndian.PutUint16(buf[10:12], uint16(len(payload)))
+	copy(buf[12:], payload)
+
+	return checksum16(buf)
+}
+
+func checksum16(data []byte) uint16 {
+	var sum uint32
+
+	for len(data) >= 2 {
+		sum += uint32(binary.BigEndian.Uint16(data[:2]))
+		data = data[2:]
+	}
+
+	if len(data) == 1 {
+		sum += uint32(data[0]) << 8
+	}
+
+	for (sum >> 16) != 0 {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
+
+	return ^uint16(sum)
 }

@@ -15,7 +15,6 @@ import (
 
 	"NetworkSetup/vdhcp"
 
-	kcp "github.com/xtaci/kcp-go/v5"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -145,20 +144,51 @@ func ShutdownServerGateway() {
 }
 
 func (s *Server) startKCP() {
-	listener, err := kcp.ListenWithOptions(fmt.Sprintf(":%d", Conf.Server.Port), nil, 0, 0)
+	addr := &net.UDPAddr{IP: net.IPv4zero, Port: Conf.Server.Port}
+	udpConn, err := net.ListenUDP("udp", addr)
 	if err != nil {
-		log.Fatalf("KCP服务端启动失败: %v", err)
+		log.Fatalf("UDP服务端启动失败: %v", err)
 	}
-	defer listener.Close()
-	log.Printf("✅ KCP 服务端启动成功，监听UDP :%d", Conf.Server.Port)
+	defer udpConn.Close()
+
+	_ = udpConn.SetReadBuffer(16 * 1024 * 1024)
+	_ = udpConn.SetWriteBuffer(16 * 1024 * 1024)
+
+	log.Printf("✅ UDP 服务端启动成功，监听UDP :%d", Conf.Server.Port)
+
+	peers := make(map[string]*udpFrameConn)
+	var peersMu sync.Mutex
+	buf := make([]byte, udpPacketBufferSize)
+
 	for {
-		conn, err := listener.AcceptKCP()
+		n, remote, err := udpConn.ReadFromUDP(buf)
 		if err != nil {
-			log.Printf("接受连接失败: %v", err)
+			log.Printf("UDP读取失败: %v", err)
 			continue
 		}
-		setupKCPSession(conn)
-		go s.handleClient(conn)
+
+		pkt := make([]byte, n)
+		copy(pkt, buf[:n])
+
+		key := remote.String()
+
+		peersMu.Lock()
+		peerConn := peers[key]
+		if peerConn == nil {
+			remoteCopy := *remote
+			peerConn = newUDPServerFrameConn(udpConn, &remoteCopy, func() {
+				peersMu.Lock()
+				delete(peers, key)
+				peersMu.Unlock()
+			})
+			peers[key] = peerConn
+			go s.handleClient(peerConn)
+		}
+		peersMu.Unlock()
+
+		if !peerConn.enqueue(pkt) {
+			log.Printf("UDP客户端队列已满，丢弃数据: remote=%s", key)
+		}
 	}
 }
 
