@@ -193,7 +193,7 @@ func writeAll(conn net.Conn, buf []byte) error {
 
 func maxFramePayload() int {
 	// 为加密头/控制字段预留额外空间，避免边界溢出。
-	return tunPayloadMTU() + 256
+	return tunPayloadMTU() + 128
 }
 
 //=========================== TUN 读写 ===========================
