@@ -23,9 +23,6 @@ const (
 	heartbeatFluctuate = 1 * time.Second
 	tunPacketQueueSize = 4096
 	clientSendWorkers  = 4
-	tunWriteBatchSize  = 32
-	tunWriteQueueSize  = 4096
-	tunWriteFlushTick  = 1 * time.Millisecond
 )
 
 type Client struct {
@@ -110,13 +107,11 @@ func (c *Client) runSession(dev tun.Device, conn *net.UDPConn) {
 	log.Printf("虚拟地址初始化完成，进入收发循环")
 	done := make(chan struct{})
 	sendErr := make(chan error, 1)
-	tunWriteQueue := make(chan []byte, tunWriteQueueSize)
 	go func() {
 		defer close(done)
 		// 下行：网络 -> TUN
-		c.connToTun(conn, sessionMgr, tunWriteQueue)
+		c.connToTun(conn, dev, sessionMgr)
 	}()
-	go c.tunBatchWriteLoop(dev, done, tunWriteQueue)
 	for i := 0; i < clientSendWorkers; i++ {
 		go c.clientDataSender(conn, done, sessionMgr, sendErr)
 	}
@@ -226,7 +221,7 @@ func (c *Client) clientDataSender(conn *net.UDPConn, done <-chan struct{}, sessi
 	}
 }
 
-func (c *Client) connToTun(conn *net.UDPConn, sessionMgr *secure.SessionManager, tunWriteQueue chan<- []byte) {
+func (c *Client) connToTun(conn *net.UDPConn, dev tun.Device, sessionMgr *secure.SessionManager) {
 	for {
 		frame, err := readUDPFrame(conn)
 		if err != nil {
@@ -246,50 +241,9 @@ func (c *Client) connToTun(conn *net.UDPConn, sessionMgr *secure.SessionManager,
 			log.Printf("解密业务数据失败: err=%v innerType=%d", err, innerType)
 			continue
 		}
-		select {
-		case tunWriteQueue <- plain:
-		default:
-			log.Printf("写入TUN失败: TUN批量写队列已满")
+		if _, err = dev.Write([][]byte{plain}, 0); err != nil {
+			log.Printf("写入TUN失败: %v", err)
 			return
-		}
-	}
-}
-
-func (c *Client) tunBatchWriteLoop(dev tun.Device, done <-chan struct{}, tunWriteQueue <-chan []byte) {
-	ticker := time.NewTicker(tunWriteFlushTick)
-	defer ticker.Stop()
-
-	batch := make([][]byte, 0, tunWriteBatchSize)
-	flush := func() error {
-		if len(batch) == 0 {
-			return nil
-		}
-		if _, err := dev.Write(batch, 0); err != nil {
-			return err
-		}
-		batch = batch[:0]
-		return nil
-	}
-	for {
-		select {
-		case <-done:
-			if err := flush(); err != nil {
-				log.Printf("批量写入TUN失败: %v", err)
-			}
-			return
-		case pkt := <-tunWriteQueue:
-			batch = append(batch, pkt)
-			if len(batch) >= tunWriteBatchSize {
-				if err := flush(); err != nil {
-					log.Printf("批量写入TUN失败: %v", err)
-					return
-				}
-			}
-		case <-ticker.C:
-			if err := flush(); err != nil {
-				log.Printf("批量写入TUN失败: %v", err)
-				return
-			}
 		}
 	}
 }
