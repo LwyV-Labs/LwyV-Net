@@ -122,6 +122,21 @@ type TunnelFrame struct {
 }
 
 const defaultReadFrameTimeout = 16 * time.Second
+const tunnelOverheadBytes = 80
+
+func tunPayloadMTU() int {
+	// Conf.Common.MTU 作为链路 MTU（外层 UDP/IP 预算），
+	// 实际分配给 TUN 的三层负载要预留隧道封装开销，避免外层分片导致大面积丢包。
+	mtu := Conf.Common.MTU
+	if mtu <= 0 {
+		mtu = 1400
+	}
+	payloadMTU := mtu - tunnelOverheadBytes
+	if payloadMTU < 576 {
+		payloadMTU = 576
+	}
+	return payloadMTU
+}
 
 // readPacket 读包
 func readFrame(conn net.Conn, maxPayloadSize int, timeout time.Duration) (*TunnelFrame, error) {
@@ -178,7 +193,7 @@ func writeAll(conn net.Conn, buf []byte) error {
 
 func maxFramePayload() int {
 	// 为加密头/控制字段预留额外空间，避免边界溢出。
-	return Conf.Common.MTU + 256
+	return tunPayloadMTU() + 256
 }
 
 //=========================== TUN 读写 ===========================

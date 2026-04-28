@@ -110,7 +110,7 @@ func (s *Server) initGateway() error {
 		ifName = "LwyV-Gateway"
 	}
 	mask := Conf.Common.SubnetMask
-	dev, err := setup.CreateTun(ifName, Conf.Common.MTU)
+	dev, err := setup.CreateTun(ifName, tunPayloadMTU())
 	if err != nil {
 		return fmt.Errorf("创建服务端TUN失败: %w", err)
 	}
@@ -453,7 +453,7 @@ func (s *Server) writeToServerTun(pkt []byte) error {
 func (s *Server) tunToClients(dev tun.Device) {
 	for {
 		// 从服务端网关 TUN 读到的数据，按目标 IP 发回对应客户端。
-		packets, err := readFromTun(dev, Conf.Common.MTU)
+		packets, err := readFromTun(dev, tunPayloadMTU())
 		if err != nil {
 			return
 		}
