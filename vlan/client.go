@@ -23,6 +23,9 @@ const (
 	heartbeatFluctuate = 1 * time.Second
 	tunPacketQueueSize = 4096
 	clientSendWorkers  = 4
+	tunWriteBatchSize  = 32
+	tunWriteQueueSize  = 4096
+	tunWriteFlushTick  = 1 * time.Millisecond
 )
 
 type Client struct {
@@ -99,16 +102,19 @@ func (c *Client) runSession(dev tun.Device, conn net.Conn) {
 	log.Printf("虚拟地址初始化完成，进入收发循环")
 	done := make(chan struct{})
 	sendErr := make(chan error, 1)
+	recvErr := make(chan error, 1)
+	tunWriteQueue := make(chan []byte, tunWriteQueueSize)
 	go func() {
 		defer close(done)
 		// 下行：网络 -> TUN
-		c.connToTun(dev, conn, sessionMgr)
+		c.connToTun(conn, sessionMgr, tunWriteQueue, recvErr)
 	}()
+	go c.tunBatchWriteLoop(dev, done, tunWriteQueue, recvErr)
 	for i := 0; i < clientSendWorkers; i++ {
 		go c.clientDataSender(conn, done, sessionMgr, sendErr)
 	}
 	// 上行：TUN/心跳 -> 网络
-	c.clientSendLoop(conn, done, sendErr)
+	c.clientSendLoop(conn, done, sendErr, recvErr)
 	_ = conn.Close()
 	setup.CleanupClientProxyRouting()
 }
@@ -177,7 +183,7 @@ func (c *Client) tunToPacketQueue(dev tun.Device) {
 	}
 }
 
-func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sendErr <-chan error) {
+func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sendErr <-chan error, recvErr <-chan error) {
 	ticker := time.NewTicker(kit.RandomInterval(heartbeatInterval, heartbeatFluctuate))
 	defer ticker.Stop()
 	for {
@@ -185,6 +191,8 @@ func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sendErr <-c
 		case <-done:
 			return
 		case <-sendErr:
+			return
+		case <-recvErr:
 			return
 		case <-ticker.C:
 			// 心跳包用于保活与探测链路可用性。
@@ -213,7 +221,7 @@ func (c *Client) clientDataSender(conn net.Conn, done <-chan struct{}, sessionMg
 	}
 }
 
-func (c *Client) connToTun(dev tun.Device, conn net.Conn, sessionMgr *secure.SessionManager) {
+func (c *Client) connToTun(conn net.Conn, sessionMgr *secure.SessionManager, tunWriteQueue chan<- []byte, recvErr chan<- error) {
 	for {
 		frame, err := readFrame(conn, maxFramePayload(), defaultReadFrameTimeout)
 		if err != nil {
@@ -233,10 +241,63 @@ func (c *Client) connToTun(dev tun.Device, conn net.Conn, sessionMgr *secure.Ses
 			log.Printf("解密业务数据失败: err=%v innerType=%d", err, innerType)
 			continue
 		}
-		if err = writeToTun(dev, plain); err != nil {
-			// TUN 写失败通常意味着网卡已关闭或系统层异常。
+		select {
+		case tunWriteQueue <- plain:
+		default:
+			err = fmt.Errorf("TUN批量写队列已满")
 			log.Printf("写入TUN失败: %v", err)
+			select {
+			case recvErr <- err:
+			default:
+			}
 			return
+		}
+	}
+}
+
+func (c *Client) tunBatchWriteLoop(dev tun.Device, done <-chan struct{}, tunWriteQueue <-chan []byte, recvErr chan<- error) {
+	ticker := time.NewTicker(tunWriteFlushTick)
+	defer ticker.Stop()
+
+	batch := make([][]byte, 0, tunWriteBatchSize)
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		if _, err := dev.Write(batch, 0); err != nil {
+			return err
+		}
+		batch = batch[:0]
+		return nil
+	}
+	for {
+		select {
+		case <-done:
+			if err := flush(); err != nil {
+				log.Printf("批量写入TUN失败: %v", err)
+			}
+			return
+		case pkt := <-tunWriteQueue:
+			batch = append(batch, pkt)
+			if len(batch) >= tunWriteBatchSize {
+				if err := flush(); err != nil {
+					log.Printf("批量写入TUN失败: %v", err)
+					select {
+					case recvErr <- err:
+					default:
+					}
+					return
+				}
+			}
+		case <-ticker.C:
+			if err := flush(); err != nil {
+				log.Printf("批量写入TUN失败: %v", err)
+				select {
+				case recvErr <- err:
+				default:
+				}
+				return
+			}
 		}
 	}
 }
