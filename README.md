@@ -65,7 +65,8 @@ cp build/config.yaml config.yaml
 ### 2) 编译
 
 ```bash
-go build -o build/lwyv-net .
+go build -o build/vnet.exe
+$env:CGO_ENABLED=0; $env:GOOS="linux"; $env:GOARCH="amd64"; go build -o build/vnet  
 ```
 
 ### 3) 初始化密钥（建议两端都执行）

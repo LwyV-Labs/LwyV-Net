@@ -7,7 +7,7 @@ import (
 )
 
 const configPath = "config.yaml"
-const webConsoleAddr = ":8080"
+const webConsoleAddr = ":52013"
 
 func main() {
 	// 启动入口（已简化）：
@@ -16,12 +16,12 @@ func main() {
 	if len(os.Args) >= 2 {
 		runType := os.Args[1]
 		switch runType {
-		case "web-client":
+		case "client":
 			if err := webui.StartClientConsole(configPath, webConsoleAddr); err != nil {
 				log.Fatalf("启动客户端 Web 控制台失败: %v", err)
 			}
 			return
-		case "web-server":
+		case "server":
 			if err := webui.StartServerConsole(configPath, webConsoleAddr); err != nil {
 				log.Fatalf("启动服务端 Web 控制台失败: %v", err)
 			}
