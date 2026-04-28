@@ -53,10 +53,6 @@ func ConfigureTunAddress(ifName, ip, mask string) error {
 	return nil
 }
 
-func SetInterfaceMTU(ifName string, mtu int) error {
-	return exec.Command("ip", "link", "set", "dev", ifName, "mtu", fmt.Sprintf("%d", mtu)).Run()
-}
-
 func AllowTunTraffic(ifName string) error {
 	return nil
 }

@@ -107,9 +107,7 @@ func (s *Server) initGateway() error {
 	if err != nil {
 		return fmt.Errorf("创建服务端TUN失败: %w", err)
 	}
-	if err = setup.SetInterfaceMTU(ifName, Conf.Common.MTU); err != nil {
-		log.Printf("设置服务端虚拟网卡MTU失败(if=%s mtu=%d): %v", ifName, Conf.Common.MTU, err)
-	}
+
 	if err = setup.ConfigureTunAddress(ifName, Conf.Common.Gateway, mask); err != nil {
 		_ = dev.Close()
 		return fmt.Errorf("配置服务端TUN地址失败: %w", err)
