@@ -88,6 +88,11 @@ func ConfigureTunAddress(ifName, ip, mask string) error {
 	return cmd.Run()
 }
 
+func SetInterfaceMTU(ifName string, mtu int) error {
+	cmd := exec.Command("netsh", "interface", "ipv4", "set", "subinterface", ifName, fmt.Sprintf("mtu=%d", mtu), "store=active")
+	return cmd.Run()
+}
+
 func AllowTunTraffic(ifName string) error {
 	ps := fmt.Sprintf(`
 $alias = %q

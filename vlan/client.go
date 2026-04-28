@@ -49,6 +49,9 @@ func (c *Client) Start() {
 		log.Fatalf("创建虚拟网卡失败: %v", err)
 	}
 	defer dev.Close()
+	if err = setup.SetInterfaceMTU(Conf.Client.IfName, Conf.Common.MTU); err != nil {
+		log.Printf("设置客户端虚拟网卡MTU失败(if=%s mtu=%d): %v", Conf.Client.IfName, Conf.Common.MTU, err)
+	}
 	_ = setup.AllowTunTraffic(Conf.Client.IfName)
 	defer setup.CleanupTunTraffic()
 	defer setup.CleanupClientProxyRouting()
