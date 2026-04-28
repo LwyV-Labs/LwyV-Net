@@ -3,7 +3,6 @@ package vlan
 import (
 	"encoding/binary"
 	"fmt"
-	"io"
 	"net"
 	"time"
 
@@ -123,6 +122,8 @@ type TunnelFrame struct {
 
 const defaultReadFrameTimeout = 16 * time.Second
 const tunnelOverheadBytes = 80
+const udpPacketBufferSize = 64 * 1024
+const framePayloadPadding = 128
 
 func tunPayloadMTU() int {
 	// Conf.Common.MTU 作为链路 MTU（外层 UDP/IP 预算），
@@ -138,28 +139,20 @@ func tunPayloadMTU() int {
 	return payloadMTU
 }
 
-// readPacket 读包
-func readFrame(conn net.Conn, maxPayloadSize int, timeout time.Duration) (*TunnelFrame, error) {
+func decodeFrame(datagram []byte) (*TunnelFrame, error) {
 	// 协议格式：
 	// [4字节长度][1字节Type][N字节Payload]
-	if timeout > 0 {
-		_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	if len(datagram) < 5 {
+		return nil, fmt.Errorf("frame too short: %d", len(datagram))
 	}
-	lenBuf := make([]byte, 4)
-	if _, err := io.ReadFull(conn, lenBuf); err != nil {
-		return nil, err
-	}
-
-	frameLen := binary.BigEndian.Uint32(lenBuf)
-	if frameLen < 1 || frameLen > uint32(maxPayloadSize+1) {
+	frameLen := binary.BigEndian.Uint32(datagram[:4])
+	if frameLen < 1 || frameLen > uint32(maxFramePayload()+1) {
 		return nil, fmt.Errorf("invalid frame len: %d", frameLen)
 	}
-
-	raw := make([]byte, frameLen)
-	if _, err := io.ReadFull(conn, raw); err != nil {
-		return nil, err
+	if int(frameLen)+4 != len(datagram) {
+		return nil, fmt.Errorf("frame size mismatch: header=%d actual=%d", frameLen, len(datagram)-4)
 	}
-
+	raw := datagram[4:]
 	payload := raw[1:]
 	frame := &TunnelFrame{
 		// Length 只记录业务负载长度，不包含 Type 字节。
@@ -170,30 +163,37 @@ func readFrame(conn net.Conn, maxPayloadSize int, timeout time.Duration) (*Tunne
 	return frame, nil
 }
 
-// writePacket 写包
-func writeFrame(conn net.Conn, packetType PacketType, payload []byte) error {
+func encodeFrame(packetType PacketType, payload []byte) []byte {
 	buf := make([]byte, 5+len(payload))
 	binary.BigEndian.PutUint32(buf[:4], uint32(1+len(payload)))
 	buf[4] = byte(packetType)
 	copy(buf[5:], payload)
-	return writeAll(conn, buf)
+	return buf
 }
 
-func writeAll(conn net.Conn, buf []byte) error {
-	// net.Conn.Write 可能只写入部分字节，所以循环直到写完。
-	for len(buf) > 0 {
-		n, err := conn.Write(buf)
-		if err != nil {
-			return err
-		}
-		buf = buf[n:]
+func readUDPFrame(conn *net.UDPConn) (*TunnelFrame, error) {
+	_ = conn.SetReadDeadline(time.Now().Add(defaultReadFrameTimeout))
+	buf := make([]byte, udpPacketBufferSize)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return decodeFrame(buf[:n])
+}
+
+func writeUDPFrame(conn *net.UDPConn, packetType PacketType, payload []byte) error {
+	_, err := conn.Write(encodeFrame(packetType, payload))
+	return err
+}
+
+func writeUDPFrameTo(conn *net.UDPConn, remote *net.UDPAddr, packetType PacketType, payload []byte) error {
+	_, err := conn.WriteToUDP(encodeFrame(packetType, payload), remote)
+	return err
 }
 
 func maxFramePayload() int {
 	// 为加密头/控制字段预留额外空间，避免边界溢出。
-	return tunPayloadMTU() + 128
+	return tunPayloadMTU() + framePayloadPadding
 }
 
 //=========================== TUN 读写 ===========================

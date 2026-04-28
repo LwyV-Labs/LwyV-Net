@@ -10,32 +10,38 @@ import (
 const configPath = "config.yaml"
 
 func main() {
+	mode := parseRunMode(os.Args)
+	switch mode {
+	case "genkey":
+		genkey()
+		return
+	case string(vlan.RunModeServer):
+		vlan.InitConfig(configPath, vlan.RunModeServer)
+		vlan.StartServer()
+		return
+	case string(vlan.RunModeClient):
+		vlan.InitConfig(configPath, vlan.RunModeClient)
+		vlan.StartClient()
+		return
+	}
+	log.Fatal("unreachable")
+}
+
+func parseRunMode(args []string) string {
 	// 启动入口：
 	// 1) genkey 不启动客户端/服务端，只生成 Noise IK / ECDH 长期身份密钥并回写配置。
 	// 2) 没有传参时默认按客户端启动。
-	// 3) 传参为 "server" 时按服务端启动；传参为 "client" 时按客户端启动。
-	if len(os.Args) >= 2 {
-		runType := os.Args[1]
-		switch runType {
-		case "genkey":
-			genkey()
-			return
-		case "server":
-			vlan.InitConfig(configPath, vlan.RunModeServer)
-			vlan.StartServer()
-			return
-		case "client":
-			vlan.InitConfig(configPath, vlan.RunModeClient)
-			vlan.StartClient()
-			return
-		default:
-			log.Fatal(runType + " is not a valid runType")
-		}
+	// 3) 支持 server / client 两种运行模式。
+	if len(args) < 2 {
+		return string(vlan.RunModeClient)
 	}
-
-	// 默认模式：客户端
-	vlan.InitConfig(configPath, vlan.RunModeClient)
-	vlan.StartClient()
+	switch args[1] {
+	case "genkey", string(vlan.RunModeServer), string(vlan.RunModeClient):
+		return args[1]
+	default:
+		log.Fatalf("%s is not a valid runType", args[1])
+		return ""
+	}
 }
 
 func genkey() {
