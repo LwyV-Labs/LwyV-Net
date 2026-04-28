@@ -1,6 +1,6 @@
 common:
-    privateKey: RDnBaCjCXtJwfT4VVkYsBq6LaYsgrC4MSZ5Qf+CYxrI=
-    peerPublicKeys: [GjiTCcuMWWc6gQFcPg/72rmvYZGw0ubsyF7mRLx2qhE=]
+    privateKey: "RDnBaCjCXtJwfT4VVkYsBq6LaYsgrC4MSZ5Qf+CYxrI="
+    peerPublicKeys: ["GjiTCcuMWWc6gQFcPg/72rmvYZGw0ubsyF7mRLx2qhE="]
     mtu: 1250
     proxy: true
     gateway: 172.19.0.254
