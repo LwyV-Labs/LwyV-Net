@@ -33,6 +33,9 @@ type ClientPeer struct {
 	virtualIP     string
 	allowedIPs    []net.IPNet
 	session       *secure.SessionManager
+	sendQueue     chan []byte
+	sendDone      chan struct{}
+	sendCloseOnce sync.Once
 }
 
 type KcpClient struct {
@@ -48,6 +51,12 @@ type Server struct {
 	dhcpMask    string
 	keyID       atomic.Uint32
 }
+
+const (
+	// 服务端每个客户端连接的下行发送队列大小。
+	// 把“路由决策/读TUN”与“实际网络写入”解耦，避免写阻塞导致周期性卡顿。
+	serverPeerSendQueueSize = 4096
+)
 
 func NewServer() *Server {
 	return &Server{clientTable: &KcpClient{m: make(map[string]*ClientPeer)}}
@@ -156,7 +165,13 @@ func (s *Server) startKCP() {
 
 func (s *Server) handleClient(conn net.Conn) {
 	// 一个连接对应一个 peer，上面维护其会话和分配到的虚拟 IP。
-	peer := &ClientPeer{conn: conn, session: &secure.SessionManager{}}
+	peer := &ClientPeer{
+		conn:      conn,
+		session:   &secure.SessionManager{},
+		sendQueue: make(chan []byte, serverPeerSendQueueSize),
+		sendDone:  make(chan struct{}),
+	}
+	go s.peerSendLoop(peer)
 	defer s.cleanupClientPeer(peer)
 
 	if err := s.performHandshake(peer, nil); err != nil {
@@ -194,7 +209,26 @@ func (s *Server) handleClient(conn net.Conn) {
 	}
 }
 
+func (s *Server) peerSendLoop(peer *ClientPeer) {
+	for {
+		select {
+		case <-peer.sendDone:
+			return
+		case pkt := <-peer.sendQueue:
+			peer.mu.Lock()
+			err := s.writeSecureFrame(peer, PacketTypeIP, pkt)
+			peer.mu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}
+}
+
 func (s *Server) cleanupClientPeer(peer *ClientPeer) {
+	peer.sendCloseOnce.Do(func() {
+		close(peer.sendDone)
+	})
 	// 连接结束时，需要从路由表和 DHCP 租约中清理。
 	s.clientTable.Lock()
 	for ip, p := range s.clientTable.m {
@@ -289,9 +323,7 @@ func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {
 		_ = s.writeToServerTun(pkt)
 		return
 	}
-	targetPeer.mu.Lock()
-	_ = s.writeSecureFrame(targetPeer, PacketTypeIP, pkt)
-	targetPeer.mu.Unlock()
+	_ = s.enqueuePeerPacket(targetPeer, pkt)
 }
 
 func (s *Server) broadcastPacket(heardInfo *IPHeaderInfo, pkt []byte) {
@@ -304,9 +336,19 @@ func (s *Server) broadcastPacket(heardInfo *IPHeaderInfo, pkt []byte) {
 	}
 	s.clientTable.RUnlock()
 	for _, targetPeer := range targets {
-		targetPeer.mu.Lock()
-		_ = s.writeSecureFrame(targetPeer, PacketTypeIP, pkt)
-		targetPeer.mu.Unlock()
+		_ = s.enqueuePeerPacket(targetPeer, pkt)
+	}
+}
+
+func (s *Server) enqueuePeerPacket(peer *ClientPeer, pkt []byte) error {
+	// 异步发送需要独立缓冲，避免上游切片被复用导致数据错乱。
+	buf := make([]byte, len(pkt))
+	copy(buf, pkt)
+	select {
+	case <-peer.sendDone:
+		return fmt.Errorf("peer sender closed")
+	case peer.sendQueue <- buf:
+		return nil
 	}
 }
 
@@ -400,9 +442,7 @@ func (s *Server) tunToClients(dev tun.Device) {
 			if !exists {
 				continue
 			}
-			targetPeer.mu.Lock()
-			_ = s.writeSecureFrame(targetPeer, PacketTypeIP, pkt)
-			targetPeer.mu.Unlock()
+			_ = s.enqueuePeerPacket(targetPeer, pkt)
 		}
 	}
 }
