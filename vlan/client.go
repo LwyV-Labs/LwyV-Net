@@ -22,8 +22,6 @@ import (
 const (
 	heartbeatInterval  = 5 * time.Second
 	heartbeatFluctuate = 1 * time.Second
-	readTimeout        = 16 * time.Second
-	vdhcpTimeout       = 8 * time.Second
 	// 读 TUN 与发网络之间的缓冲队列。对 TCP 业务而言，过度丢包会触发重传/拥塞回退，
 	// 体感就是“突发-停顿-突发”，因此这里适当放大队列并配合背压，避免静默丢包。
 	tunPacketQueueSize = 4096
@@ -139,13 +137,11 @@ func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) 
 	if err != nil {
 		return "", "", err
 	}
-	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err = c.writeSecureFrame(conn, sessionMgr, PacketTypeVDHCP, discover); err != nil {
 		log.Printf("发送DHCP Discover失败: %v", err)
 		return "", "", err
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(vdhcpTimeout))
-	frame, err := readFrame(conn, maxFramePayload())
+	frame, err := readFrame(conn, maxFramePayload(), defaultReadFrameTimeout)
 	if err != nil {
 		log.Printf("读取DHCP Offer失败: err=%v", err)
 		return "", "", fmt.Errorf("读取DHCP OFFER失败: %w", err)
@@ -203,8 +199,7 @@ func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr 
 
 func (c *Client) connToTun(dev tun.Device, conn net.Conn, sessionMgr *secure.SessionManager) {
 	for {
-		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
-		frame, err := readFrame(conn, maxFramePayload())
+		frame, err := readFrame(conn, maxFramePayload(), defaultReadFrameTimeout)
 		if err != nil {
 			log.Printf("读取服务端数据失败，连接即将重建: %v", err)
 			return
@@ -253,7 +248,7 @@ func (c *Client) performHandshake(conn net.Conn, sessionMgr *secure.SessionManag
 	session, err := hs.InitiatorHandshake(
 		func(msg []byte) error { return writeFrame(conn, PacketTypeHandshakeInit, msg) },
 		func() ([]byte, error) {
-			frame, err := readFrame(conn, secure.MaxHandshakeMsgSize)
+			frame, err := readFrame(conn, secure.MaxHandshakeMsgSize, defaultReadFrameTimeout)
 			if err != nil {
 				return nil, err
 			}

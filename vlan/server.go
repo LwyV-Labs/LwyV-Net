@@ -12,7 +12,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
-	"time"
 
 	"NetworkSetup/vdhcp"
 
@@ -181,8 +180,7 @@ func (s *Server) handleClient(conn net.Conn) {
 	log.Printf("客户端认证成功 remote=%s device=%s", conn.RemoteAddr(), peer.deviceID)
 
 	for {
-		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
-		frame, err := readFrame(conn, maxFramePayload())
+		frame, err := readFrame(conn, maxFramePayload(), defaultReadFrameTimeout)
 		if err != nil {
 			log.Printf("客户端读连接失败并断开: remote=%s device=%s err=%v", conn.RemoteAddr(), peer.deviceID, err)
 			return
@@ -247,7 +245,6 @@ func (s *Server) cleanupClientPeer(peer *ClientPeer) {
 func (s *Server) handlePing(peer *ClientPeer) bool {
 	peer.mu.Lock()
 	defer peer.mu.Unlock()
-	_ = peer.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	return writeFrame(peer.conn, PacketTypePong, nil) == nil
 }
 
@@ -380,7 +377,7 @@ func (s *Server) performHandshake(peer *ClientPeer, initMsg []byte) error {
 				initMsg = nil
 				return msg, nil
 			}
-			frame, err := readFrame(peer.conn, maxFramePayload())
+			frame, err := readFrame(peer.conn, maxFramePayload(), defaultReadFrameTimeout)
 			if err != nil {
 				return nil, err
 			}
