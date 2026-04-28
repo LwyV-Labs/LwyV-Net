@@ -14,7 +14,7 @@ func StartServerConsole(configPath string, listenAddr string) error {
 
 	vlan.InitConfig(configPath, vlan.RunModeServer)
 	vlan.StartManagedServer()
-
+	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 	r.LoadHTMLGlob("webui/templates/*")
 	autoOpenBrowser(listenAddr)
