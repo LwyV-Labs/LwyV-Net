@@ -173,7 +173,7 @@ func (c *Client) requestVDHCP(conn *net.UDPConn, sessionMgr *secure.SessionManag
 
 func (c *Client) tunToPacketQueue(dev tun.Device) {
 	for {
-		packets, err := readFromTun(dev, tunPayloadMTU())
+		packets, err := readFromTun(dev)
 		if err != nil {
 			return
 		}
