@@ -428,7 +428,7 @@ func (s *Server) writeToServerTun(pkt []byte) error {
 func (s *Server) tunToClients(dev tun.Device) {
 	for {
 		// 从服务端网关 TUN 读到的数据，按目标 IP 发回对应客户端。
-		packets, err := readFromTun(dev, tunPayloadMTU())
+		packets, err := readFromTun(dev)
 		if err != nil {
 			return
 		}

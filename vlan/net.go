@@ -121,20 +121,60 @@ type TunnelFrame struct {
 }
 
 const defaultReadFrameTimeout = 16 * time.Second
-const tunnelOverheadBytes = 80
 const udpPacketBufferSize = 64 * 1024
-const framePayloadPadding = 128
 
-func tunPayloadMTU() int {
-	// Conf.Common.MTU 作为链路 MTU（外层 UDP/IP 预算），
-	// 实际分配给 TUN 的三层负载要预留隧道封装开销，避免外层分片导致大面积丢包。
+const (
+	// Conf.Common.MTU 的语义：最外层单个 UDP 发送报文的总长度上限（含外层 IP+UDP 头）。
+	defaultOuterPacketMTU = 1400
+
+	// 外层开销（IPv4 + UDP）。
+	outerIPv4HeaderBytes        = 20
+	outerUDPHeaderBytes         = 8
+	outerTransportOverheadBytes = outerIPv4HeaderBytes + outerUDPHeaderBytes
+
+	// 隧道帧开销：[4字节Length][1字节Type]。
+	tunnelFrameHeaderBytes = 5
+
+	// 安全层开销（secure/session.go）：
+	// Encrypt 输出 = 13字节头(keyID+counter+innerType) + AEAD密文(含16字节Tag)。
+	secureHeaderBytes   = 13
+	secureAEADTagBytes  = 16
+	secureOverheadBytes = secureHeaderBytes + secureAEADTagBytes
+
+	// TUN 三层报文的保底 MTU（避免配置过小导致异常）。
+	minInnerIPMTU = 576
+)
+
+func configuredOuterPacketMTU() int {
 	mtu := Conf.Common.MTU
 	if mtu <= 0 {
-		mtu = 1400
+		mtu = defaultOuterPacketMTU
 	}
-	payloadMTU := mtu - tunnelOverheadBytes
-	if payloadMTU < 576 {
-		payloadMTU = 576
+	return mtu
+}
+
+func securePayloadMTU() int {
+	// 最大 TunnelFrame.Payload（即 UDP 数据中的业务负载）：
+	// outer_total - outer(IP+UDP) - frame_header
+	mtu := configuredOuterPacketMTU() - outerTransportOverheadBytes - tunnelFrameHeaderBytes
+	if mtu < 1 {
+		return 1
+	}
+	return mtu
+}
+
+func tunPayloadMTU() int {
+	// 最大原始 IP 负载（TUN 侧）：
+	// secure_payload_mtu - secure_overhead
+	//
+	// 分层关系（从外到内）：
+	// 1) Conf.Common.MTU：外层总包大小
+	// 2) 减去外层 IP/UDP 头
+	// 3) 减去 TunnelFrame 头，得到 frame payload 上限
+	// 4) 安全数据帧还需减去加密层开销，得到可承载原始 IP 报文的最大长度（TUN MTU）
+	payloadMTU := securePayloadMTU() - secureOverheadBytes
+	if payloadMTU < minInnerIPMTU {
+		payloadMTU = minInnerIPMTU
 	}
 	return payloadMTU
 }
@@ -192,8 +232,10 @@ func writeUDPFrameTo(conn *net.UDPConn, remote *net.UDPAddr, packetType PacketTy
 }
 
 func maxFramePayload() int {
-	// 为加密头/控制字段预留额外空间，避免边界溢出。
-	return tunPayloadMTU() + framePayloadPadding
+	// TunnelFrame.Payload 的协议上限（用于解码校验）。
+	// 对于 PacketTypeSecure，它对应密文长度上限；
+	// 对于控制帧，它是统一的 payload 上限。
+	return securePayloadMTU()
 }
 
 //=========================== TUN 读写 ===========================
@@ -204,12 +246,13 @@ func writeToTun(dev tun.Device, pkt []byte) error {
 	return err
 }
 
-func readFromTun(dev tun.Device, mtu int) ([][]byte, error) {
+func readFromTun(dev tun.Device) ([][]byte, error) {
 	// BatchSize 表示底层驱动建议一次读取多少包，能减少系统调用次数。
 	batchSize := dev.BatchSize()
 	if batchSize < 1 {
 		batchSize = 1
 	}
+	mtu := tunPayloadMTU()
 
 	bufs := make([][]byte, batchSize)
 	sizes := make([]int, batchSize)
