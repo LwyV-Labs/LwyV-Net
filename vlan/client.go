@@ -22,8 +22,6 @@ import (
 const (
 	heartbeatInterval  = 5 * time.Second
 	heartbeatFluctuate = 1 * time.Second
-	// 读 TUN 与发网络之间的缓冲队列。对 TCP 业务而言，过度丢包会触发重传/拥塞回退，
-	// 体感就是“突发-停顿-突发”，因此这里适当放大队列并配合背压，避免静默丢包。
 	tunPacketQueueSize = 4096
 )
 
@@ -51,13 +49,10 @@ func (c *Client) Start() {
 	_ = setup.AllowTunTraffic(Conf.Client.IfName)
 	defer setup.CleanupTunTraffic()
 	defer setup.CleanupClientProxyRouting()
-
 	c.installCleanupSignal()
 
 	go c.tunToPacketQueue(dev)
-
 	c.startKCP(dev)
-
 }
 
 func (c *Client) installCleanupSignal() {

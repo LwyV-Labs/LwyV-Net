@@ -132,11 +132,25 @@ func setupKCPSession(conn *kcp.UDPSession) {
 	// - 增大窗口和缓冲，减少高吞吐时丢包影响
 	// - 开启 stream 模式，让上层可按字节流读取 frame，避免把“分两次 Write(header+payload)”
 	//   误当成两条独立消息，导致读侧抖动/阻塞。
-	conn.SetStreamMode(true)
+	//conn.SetStreamMode(true)
 	conn.SetWriteDelay(false)
 	conn.SetNoDelay(1, 20, 2, 1)
 	conn.SetWindowSize(1024, 1024)
-	conn.SetMtu(Conf.Common.MTU + 128)
+	// 注意：KCP 的 MTU 是“UDP 负载大小”，不是虚拟网卡 MTU。
+	// 之前使用 Conf.Common.MTU + 128，在公网链路上很容易超过路径 MTU，
+	// 触发 UDP 分片后丢包会急剧增大，表现为 iperf 周期性归零/吞吐塌陷。
+	// 这里将 KCP MTU 固定在更稳妥的公网值（上限 1200）。
+	kcpMTU := Conf.Common.MTU
+	if kcpMTU <= 0 {
+		kcpMTU = 1200
+	}
+	if kcpMTU > 1200 {
+		kcpMTU = 1200
+	}
+	if kcpMTU < 576 {
+		kcpMTU = 576
+	}
+	conn.SetMtu(kcpMTU)
 	conn.SetACKNoDelay(true)
 	_ = conn.SetReadBuffer(4 * 1024 * 1024)
 	_ = conn.SetWriteBuffer(4 * 1024 * 1024)
@@ -176,20 +190,11 @@ func readFrame(conn net.Conn, maxPayloadSize int, timeout time.Duration) (*Tunne
 
 // writePacket 写包
 func writeFrame(conn net.Conn, packetType PacketType, payload []byte) error {
-	// 和 readFrame 对应，先写总长度，再写 type 和 payload。
-	// 这里避免把 payload 再拷贝到新的大缓冲区，减少内存分配与拷贝开销。
-	frameLen := 1 + len(payload)
-	header := [5]byte{}
-	binary.BigEndian.PutUint32(header[:4], uint32(frameLen))
-	header[4] = byte(packetType)
-
-	if len(payload) == 0 {
-		return writeAll(conn, header[:])
-	}
-	if err := writeAll(conn, header[:]); err != nil {
-		return err
-	}
-	return writeAll(conn, payload)
+	buf := make([]byte, 5+len(payload))
+	binary.BigEndian.PutUint32(buf[:4], uint32(1+len(payload)))
+	buf[4] = byte(packetType)
+	copy(buf[5:], payload)
+	return writeAll(conn, buf)
 }
 
 func writeAll(conn net.Conn, buf []byte) error {
