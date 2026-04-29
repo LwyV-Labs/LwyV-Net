@@ -54,6 +54,7 @@ const (
 	// 服务端每个客户端连接的下行发送队列大小。
 	// 把“路由决策/读TUN”与“实际网络写入”解耦，避免写阻塞导致周期性卡顿。
 	serverPeerSendQueueSize = 4096
+	serverPeerSendWorkers   = 4
 )
 
 func NewServer() *Server {
@@ -184,7 +185,9 @@ func (s *Server) startUDP() {
 				sendQueue: make(chan []byte, serverPeerSendQueueSize),
 				sendDone:  make(chan struct{}),
 			}
-			go s.peerSendLoop(peer)
+			for i := 0; i < serverPeerSendWorkers; i++ {
+				go s.peerSendLoop(peer)
+			}
 			peers[key] = peer
 		}
 		peersMu.Unlock()
