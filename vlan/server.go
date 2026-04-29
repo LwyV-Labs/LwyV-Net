@@ -139,7 +139,7 @@ func (s *Server) initGateway() error {
 		_ = dev.Close()
 		return fmt.Errorf("配置服务端TUN地址失败: %w", err)
 	}
-	if err = enableServerGatewayNAT(ifName, Conf.Common.Gateway, mask, Conf.Server.EgressIf); err != nil {
+	if err = setup.EnableServerGatewayNAT(ifName, Conf.Common.Gateway, mask, Conf.Server.EgressIf); err != nil {
 		_ = dev.Close()
 		return fmt.Errorf("配置服务端NAT失败: %w", err)
 	}
