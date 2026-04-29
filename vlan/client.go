@@ -21,8 +21,8 @@ import (
 const (
 	heartbeatInterval  = 5 * time.Second
 	heartbeatFluctuate = 1 * time.Second
-	tunPacketQueueSize = 4096
-	clientSendWorkers  = 4
+	tunPacketQueueSize = 16 * 1024
+	clientSendWorkers  = 8
 )
 
 type Client struct {
