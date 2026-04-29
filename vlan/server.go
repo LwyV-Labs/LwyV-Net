@@ -75,7 +75,27 @@ func (s *Server) Start() {
 	}
 	s.installCleanupSignal()
 
-	s.startKCP()
+	s.startTCPServer()
+}
+
+func (s *Server) startTCPServer() {
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", Conf.Server.Port))
+	if err != nil {
+		log.Fatalf("服务端启动失败: %v", err)
+	}
+	defer listener.Close()
+
+	log.Printf("✅ TCP 服务端启动成功，监听 :%d", Conf.Server.Port)
+	log.Println("📝 等待客户端连接并转发IP包...")
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Printf("接受连接失败: %v", err)
+			continue
+		}
+		go s.handleClient(conn)
+	}
 }
 
 func (s *Server) installCleanupSignal() {
@@ -141,55 +161,6 @@ func ShutdownServerGateway() {
 	}
 	serverTunMu.Unlock()
 
-}
-
-func (s *Server) startKCP() {
-	addr := &net.UDPAddr{IP: net.IPv4zero, Port: Conf.Server.Port}
-	udpConn, err := net.ListenUDP("udp", addr)
-	if err != nil {
-		log.Fatalf("UDP服务端启动失败: %v", err)
-	}
-	defer udpConn.Close()
-
-	_ = udpConn.SetReadBuffer(16 * 1024 * 1024)
-	_ = udpConn.SetWriteBuffer(16 * 1024 * 1024)
-
-	log.Printf("✅ UDP 服务端启动成功，监听UDP :%d", Conf.Server.Port)
-
-	peers := make(map[string]*udpFrameConn)
-	var peersMu sync.Mutex
-	buf := make([]byte, udpPacketBufferSize)
-
-	for {
-		n, remote, err := udpConn.ReadFromUDP(buf)
-		if err != nil {
-			log.Printf("UDP读取失败: %v", err)
-			continue
-		}
-
-		pkt := make([]byte, n)
-		copy(pkt, buf[:n])
-
-		key := remote.String()
-
-		peersMu.Lock()
-		peerConn := peers[key]
-		if peerConn == nil {
-			remoteCopy := *remote
-			peerConn = newUDPServerFrameConn(udpConn, &remoteCopy, func() {
-				peersMu.Lock()
-				delete(peers, key)
-				peersMu.Unlock()
-			})
-			peers[key] = peerConn
-			go s.handleClient(peerConn)
-		}
-		peersMu.Unlock()
-
-		if !peerConn.enqueue(pkt) {
-			log.Printf("UDP客户端队列已满，丢弃数据: remote=%s", key)
-		}
-	}
 }
 
 func (s *Server) handleClient(conn net.Conn) {
