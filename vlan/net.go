@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"golang.zx2c4.com/wireguard/tun"
@@ -236,6 +237,43 @@ func maxFramePayload() int {
 	// 对于 PacketTypeSecure，它对应密文长度上限；
 	// 对于控制帧，它是统一的 payload 上限。
 	return securePayloadMTU()
+}
+
+func readFrameFromConn(conn net.Conn) (*TunnelFrame, error) {
+	_ = conn.SetReadDeadline(time.Now().Add(defaultReadFrameTimeout))
+	head := make([]byte, 4)
+	if _, err := readFull(conn, head); err != nil {
+		return nil, err
+	}
+	frameLen := binary.BigEndian.Uint32(head)
+	if frameLen < 1 || frameLen > uint32(maxFramePayload()+1) {
+		return nil, fmt.Errorf("invalid frame len: %d", frameLen)
+	}
+	body := make([]byte, frameLen)
+	if _, err := readFull(conn, body); err != nil {
+		return nil, err
+	}
+	return decodeFrame(append(head, body...))
+}
+
+func writeFrameToConn(conn net.Conn, packetType PacketType, payload []byte, mu *sync.Mutex) error {
+	buf := encodeFrame(packetType, payload)
+	mu.Lock()
+	defer mu.Unlock()
+	_, err := conn.Write(buf)
+	return err
+}
+
+func readFull(conn net.Conn, b []byte) (int, error) {
+	off := 0
+	for off < len(b) {
+		n, err := conn.Read(b[off:])
+		off += n
+		if err != nil {
+			return off, err
+		}
+	}
+	return off, nil
 }
 
 //=========================== TUN 读写 ===========================

@@ -34,6 +34,7 @@ type CommonConfig struct {
 	Proxy          bool            `yaml:"proxy"`
 	Gateway        string          `yaml:"gateway"`
 	SubnetMask     string          `yaml:"subnetMask"`
+	TCPConnections int             `yaml:"tcpConnections"`
 }
 
 // ServerConfig 服务端配置
@@ -136,6 +137,12 @@ func validateConfig(mode RunMode) {
 		if Conf.Client.ServerIP == "" {
 			log.Fatalf("客户端ServerIP不能为空")
 		}
+	}
+	if Conf.Common.TCPConnections == 0 {
+		Conf.Common.TCPConnections = 16
+	}
+	if Conf.Common.TCPConnections != 16 && Conf.Common.TCPConnections != 32 && Conf.Common.TCPConnections != 64 {
+		log.Fatalf("tcpConnections 仅支持 16/32/64: %d", Conf.Common.TCPConnections)
 	}
 	// 网关、掩码必须能被正确解析。
 	if net.ParseIP(Conf.Common.Gateway) == nil {
