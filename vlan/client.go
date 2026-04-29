@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"NetworkSetup/vdhcp"
+
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -164,6 +165,7 @@ func (c *Client) reassembleToTun(dev tun.Device, done <-chan struct{}, in <-chan
 		}
 	}
 }
+
 func (c *Client) readLoop(conn net.Conn, sm *secure.SessionManager, done chan struct{}, out chan<- struct {
 	seq uint64
 	pkt []byte
