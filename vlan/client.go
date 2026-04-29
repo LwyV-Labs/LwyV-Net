@@ -9,12 +9,12 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"NetworkSetup/vdhcp"
-
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -22,155 +22,210 @@ const (
 	heartbeatInterval  = 5 * time.Second
 	heartbeatFluctuate = 1 * time.Second
 	tunPacketQueueSize = 16 * 1024
-	clientSendWorkers  = 8
 )
 
+type tcpLink struct {
+	conn net.Conn
+	mu   sync.Mutex
+}
+
 type Client struct {
-	// tunPacketChan：把“读 TUN”和“写网络”解耦，避免互相阻塞。
 	tunPacketChan chan []byte
-	// keyID：每次握手递增，用于会话轮转标识。
-	keyID atomic.Uint32
+	keyID         atomic.Uint32
+	seq           atomic.Uint64
 }
 
-func NewClient() *Client {
-	return &Client{tunPacketChan: make(chan []byte, tunPacketQueueSize)}
-}
-
-func StartClient() { NewClient().Start() }
+func NewClient() *Client { return &Client{tunPacketChan: make(chan []byte, tunPacketQueueSize)} }
+func StartClient()       { NewClient().Start() }
 
 func (c *Client) Start() {
-	// 1) 创建 TUN 网卡；2) 放行本机策略；3) 启动收发循环。
 	dev, err := setup.CreateTun(Conf.Client.IfName, tunPayloadMTU())
 	if err != nil {
 		log.Fatalf("创建虚拟网卡失败: %v", err)
 	}
 	defer dev.Close()
-
 	_ = setup.AllowTunTraffic(Conf.Client.IfName)
 	defer setup.CleanupTunTraffic()
 	defer setup.CleanupClientProxyRouting()
 	c.installCleanupSignal()
-
 	go c.tunToPacketQueue(dev)
-	c.startUDP(dev)
+	c.startTCP(dev)
 }
-
 func (c *Client) installCleanupSignal() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-ch
-		setup.CleanupClientProxyRouting()
-		setup.CleanupTunTraffic()
-		os.Exit(0)
-	}()
+	go func() { <-ch; setup.CleanupClientProxyRouting(); setup.CleanupTunTraffic(); os.Exit(0) }()
 }
 
-func (c *Client) startUDP(dev tun.Device) {
+func (c *Client) startTCP(dev tun.Device) {
 	for {
-		addr, err := net.ResolveUDPAddr("udp", Conf.Client.ServerIP)
-		if err != nil {
-			log.Printf("解析UDP服务端地址失败: %v，1秒后重试", err)
-			time.Sleep(time.Second)
-			continue
+		if err := c.runSession(dev); err != nil {
+			log.Printf("会话结束: %v", err)
 		}
-		conn, err := net.DialUDP("udp", nil, addr)
-		if err != nil {
-			log.Printf("连接UDP服务端失败: %v，1秒后重试", err)
-			time.Sleep(time.Second)
-			continue
-		}
-		_ = conn.SetReadBuffer(16 * 1024 * 1024)
-		_ = conn.SetWriteBuffer(16 * 1024 * 1024)
-		log.Printf("已连接UDP服务端: %s", Conf.Client.ServerIP)
-
-		c.runSession(dev, conn)
-
 		time.Sleep(time.Second)
 	}
 }
 
-func (c *Client) runSession(dev tun.Device, conn *net.UDPConn) {
-	// 每次连接对应一个会话管理器（保存当前密钥状态）。
-	sessionMgr := &secure.SessionManager{}
-	if err := c.performHandshake(conn, sessionMgr); err != nil {
-		log.Printf("认证握手失败: %v", err)
-		_ = conn.Close()
-		return
+func (c *Client) runSession(dev tun.Device) error {
+	conn, err := net.Dial("tcp", Conf.Client.ServerIP)
+	if err != nil {
+		return err
 	}
-	log.Printf("认证握手成功，开始申请虚拟地址")
-	if err := c.initAddress(conn, sessionMgr); err != nil {
-		log.Printf("初始化地址失败: %v", err)
-		_ = conn.Close()
-		return
+	defer conn.Close()
+	log.Printf("已连接TCP服务端: %s", Conf.Client.ServerIP)
+	sm := &secure.SessionManager{}
+	if err := c.performHandshake(conn, sm); err != nil {
+		return err
 	}
-	log.Printf("虚拟地址初始化完成，进入收发循环")
+	if err := c.initAddress(conn, sm); err != nil {
+		return err
+	}
+	links := make([]*tcpLink, Conf.Common.TCPConnections)
+	links[0] = &tcpLink{conn: conn}
+	for i := 1; i < len(links); i++ {
+		cc, e := net.Dial("tcp", Conf.Client.ServerIP)
+		if e != nil {
+			return e
+		}
+		links[i] = &tcpLink{conn: cc}
+		if e := c.performHandshake(cc, sm); e != nil {
+			return e
+		}
+	}
 	done := make(chan struct{})
-	sendErr := make(chan error, 1)
-	go func() {
-		defer close(done)
-		// 下行：网络 -> TUN
-		c.connToTun(conn, dev, sessionMgr)
-	}()
-	for i := 0; i < clientSendWorkers; i++ {
-		go c.clientDataSender(conn, done, sessionMgr, sendErr)
+	recv := make(chan struct {
+		seq uint64
+		pkt []byte
+	}, 1024)
+	for _, l := range links {
+		go c.readLoop(l.conn, sm, done, recv)
 	}
-	// 上行：TUN/心跳 -> 网络
-	c.clientSendLoop(conn, done, sendErr)
-	_ = conn.Close()
-	setup.CleanupClientProxyRouting()
+	go c.reassembleToTun(dev, done, recv)
+	tk := time.NewTicker(kit.RandomInterval(heartbeatInterval, heartbeatFluctuate))
+	defer tk.Stop()
+	rr := 0
+	for {
+		select {
+		case <-done:
+			return fmt.Errorf("link closed")
+		case pkt := <-c.tunPacketChan:
+			seq := c.seq.Add(1)
+			payload := packSeq(seq, pkt)
+			l := links[rr%len(links)]
+			rr++
+			if err := c.writeSecureFrame(l, sm, PacketTypeIP, payload); err != nil {
+				return err
+			}
+		case <-tk.C:
+			_ = writeFrameToConn(links[0].conn, PacketTypePing, nil, &links[0].mu)
+		}
+	}
+}
+func packSeq(seq uint64, p []byte) []byte {
+	b := make([]byte, 8+len(p))
+	copy(b[8:], p)
+	for i := 7; i >= 0; i-- {
+		b[i] = byte(seq)
+		seq >>= 8
+	}
+	return b
+}
+func unpackSeq(b []byte) (uint64, []byte, bool) {
+	if len(b) < 8 {
+		return 0, nil, false
+	}
+	var s uint64
+	for i := 0; i < 8; i++ {
+		s = (s << 8) | uint64(b[i])
+	}
+	return s, b[8:], true
+}
+func (c *Client) reassembleToTun(dev tun.Device, done <-chan struct{}, in <-chan struct {
+	seq uint64
+	pkt []byte
+}) {
+	next := uint64(1)
+	buf := map[uint64][]byte{}
+	for {
+		select {
+		case <-done:
+			return
+		case it := <-in:
+			buf[it.seq] = it.pkt
+			for {
+				p, ok := buf[next]
+				if !ok {
+					break
+				}
+				delete(buf, next)
+				_, _ = dev.Write([][]byte{p}, 0)
+				next++
+			}
+		}
+	}
+}
+func (c *Client) readLoop(conn net.Conn, sm *secure.SessionManager, done chan struct{}, out chan<- struct {
+	seq uint64
+	pkt []byte
+}) {
+	for {
+		f, err := readFrameFromConn(conn)
+		if err != nil {
+			close(done)
+			return
+		}
+		if f.Type != PacketTypeSecure {
+			continue
+		}
+		t, p, e := sm.Decrypt(f.IPPacket)
+		if e != nil || PacketType(t) != PacketTypeIP {
+			continue
+		}
+		s, pkt, ok := unpackSeq(p)
+		if ok {
+			out <- struct {
+				seq uint64
+				pkt []byte
+			}{s, pkt}
+		}
+	}
 }
 
-func (c *Client) initAddress(conn *net.UDPConn, sessionMgr *secure.SessionManager) error {
-	// 通过虚拟 DHCP 从服务端申请一个虚拟网段地址。
+func (c *Client) initAddress(conn net.Conn, sessionMgr *secure.SessionManager) error {
 	dhcpIP, dhcpMask, err := c.requestVDHCP(conn, sessionMgr)
 	if err != nil {
 		return err
 	}
-	log.Printf("✅ 客户端已获取 VDHCP 虚拟地址: ip=%s mask=%s", dhcpIP, dhcpMask)
 	if err = setup.ConfigureTunAddress(Conf.Client.IfName, dhcpIP, dhcpMask); err != nil {
-		return fmt.Errorf("配置虚拟网卡 IP 失败: %w", err)
+		return err
 	}
 	if Conf.Common.Proxy {
-		// 代理模式：把默认流量经虚拟网卡导向服务端网关。
 		if err = setup.SetupClientProxyRouting(Conf.Client.ServerIP, Conf.Client.IfName, Conf.Common.Gateway); err != nil {
-			return fmt.Errorf("客户端代理路由初始化失败: %w", err)
+			return err
 		}
 	}
 	return nil
 }
-
-func (c *Client) requestVDHCP(conn *net.UDPConn, sessionMgr *secure.SessionManager) (string, string, error) {
-	// DHCP Discover -> Offer 的最小流程（简化版 DHCP 协议）。
-	discover, err := vdhcp.EncodeDiscover()
-	if err != nil {
+func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) (string, string, error) {
+	discover, _ := vdhcp.EncodeDiscover()
+	l := &tcpLink{conn: conn}
+	if err := c.writeSecureFrame(l, sessionMgr, PacketTypeVDHCP, discover); err != nil {
 		return "", "", err
 	}
-	if err = c.writeSecureFrame(conn, sessionMgr, PacketTypeVDHCP, discover); err != nil {
-		log.Printf("发送DHCP Discover失败: %v", err)
-		return "", "", err
-	}
-	frame, err := readUDPFrame(conn)
+	frame, err := readFrameFromConn(conn)
 	if err != nil {
-		log.Printf("读取DHCP Offer失败: err=%v", err)
-		return "", "", fmt.Errorf("读取DHCP OFFER失败: %w", err)
-	}
-	if frame.Type != PacketTypeSecure {
-		log.Printf("读取DHCP Offer失败: 非预期类型=%d", frame.Type)
-		return "", "", fmt.Errorf("读取DHCP OFFER失败")
+		return "", "", err
 	}
 	innerType, plain, err := sessionMgr.Decrypt(frame.IPPacket)
 	if err != nil || PacketType(innerType) != PacketTypeVDHCP {
-		log.Printf("解密DHCP Offer失败: err=%v innerType=%d", err, innerType)
-		return "", "", fmt.Errorf("解密DHCP OFFER失败")
+		return "", "", fmt.Errorf("bad dhcp")
 	}
 	msg, err := vdhcp.DecodeMessage(plain)
-	if err != nil || msg.Type != vdhcp.MessageTypeOffer || msg.IP == "" || msg.SubnetMask == "" {
-		return "", "", fmt.Errorf("解析DHCP OFFER失败")
+	if err != nil {
+		return "", "", err
 	}
 	return msg.IP, msg.SubnetMask, nil
 }
-
 func (c *Client) tunToPacketQueue(dev tun.Device) {
 	for {
 		packets, err := readFromTun(dev)
@@ -178,78 +233,12 @@ func (c *Client) tunToPacketQueue(dev tun.Device) {
 			return
 		}
 		for _, pkt := range packets {
-			// 队列满时采用背压（阻塞等待），不做静默丢包。
-			// 否则 TCP 会在隧道入口发生周期性丢包，表现为吞吐抖动。
 			c.tunPacketChan <- pkt
 		}
 	}
 }
-
-func (c *Client) clientSendLoop(conn *net.UDPConn, done <-chan struct{}, sendErr <-chan error) {
-	ticker := time.NewTicker(kit.RandomInterval(heartbeatInterval, heartbeatFluctuate))
-	defer ticker.Stop()
-	for {
-		select {
-		case <-done:
-			return
-		case <-sendErr:
-			return
-		case <-ticker.C:
-			// 心跳包用于保活与探测链路可用性。
-			if err := writeUDPFrame(conn, PacketTypePing, nil); err != nil {
-				return
-			}
-		}
-	}
-}
-
-func (c *Client) clientDataSender(conn *net.UDPConn, done <-chan struct{}, sessionMgr *secure.SessionManager, sendErr chan<- error) {
-	for {
-		select {
-		case <-done:
-			return
-		case pkt := <-c.tunPacketChan:
-			// 数据包交给多个 worker 并行加密/发送，减少单循环串行瓶颈。
-			if err := c.writeSecureFrame(conn, sessionMgr, PacketTypeIP, pkt); err != nil {
-				select {
-				case sendErr <- err:
-				default:
-				}
-				return
-			}
-		}
-	}
-}
-
-func (c *Client) connToTun(conn *net.UDPConn, dev tun.Device, sessionMgr *secure.SessionManager) {
-	for {
-		frame, err := readUDPFrame(conn)
-		if err != nil {
-			log.Printf("读取服务端数据失败，连接即将重建: %v", err)
-			return
-		}
-		if frame.Type == PacketTypePong {
-			// 心跳响应包，不进 TUN。
-			continue
-		}
-		if frame.Type != PacketTypeSecure {
-			// 仅处理加密数据帧。
-			continue
-		}
-		innerType, plain, err := sessionMgr.Decrypt(frame.IPPacket)
-		if err != nil || PacketType(innerType) != PacketTypeIP {
-			log.Printf("解密业务数据失败: err=%v innerType=%d", err, innerType)
-			continue
-		}
-		if _, err = dev.Write([][]byte{plain}, 0); err != nil {
-			log.Printf("写入TUN失败: %v", err)
-			return
-		}
-	}
-}
-
-func (c *Client) writeSecureFrame(conn *net.UDPConn, sessionMgr *secure.SessionManager, packetType PacketType, payload []byte) error {
-	s := sessionMgr.Current()
+func (c *Client) writeSecureFrame(link *tcpLink, sm *secure.SessionManager, packetType PacketType, payload []byte) error {
+	s := sm.Current()
 	if s == nil {
 		return fmt.Errorf("no active session")
 	}
@@ -257,21 +246,19 @@ func (c *Client) writeSecureFrame(conn *net.UDPConn, sessionMgr *secure.SessionM
 	if err != nil {
 		return err
 	}
-	return writeUDPFrame(conn, PacketTypeSecure, sealed)
+	return writeFrameToConn(link.conn, PacketTypeSecure, sealed, &link.mu)
 }
 
-func (c *Client) performHandshake(conn *net.UDPConn, sessionMgr *secure.SessionManager) error {
-	// 客户端作为发起方（Initiator）完成一次 Noise 握手。
+func (c *Client) performHandshake(conn net.Conn, sessionMgr *secure.SessionManager) error {
 	if len(Conf.Common.Identity.Private) == 0 {
 		return fmt.Errorf("common.privateKey is required")
 	}
 	hs := secure.NewHandshaker(Conf.Common.Identity, Conf.Common.PeerStatic)
 	keyID := c.keyID.Add(1)
-	log.Printf("开始认证握手: keyID=%d", keyID)
 	session, err := hs.InitiatorHandshake(
-		func(msg []byte) error { return writeUDPFrame(conn, PacketTypeHandshakeInit, msg) },
+		func(msg []byte) error { return writeFrameToConn(conn, PacketTypeHandshakeInit, msg, &sync.Mutex{}) },
 		func() ([]byte, error) {
-			frame, err := readUDPFrame(conn)
+			frame, err := readFrameFromConn(conn)
 			if err != nil {
 				return nil, err
 			}
@@ -279,14 +266,10 @@ func (c *Client) performHandshake(conn *net.UDPConn, sessionMgr *secure.SessionM
 				return nil, fmt.Errorf("unexpected handshake frame type=%d", frame.Type)
 			}
 			return frame.IPPacket, nil
-		},
-		keyID,
-	)
+		}, keyID)
 	if err != nil {
-		log.Printf("握手协商失败: keyID=%d err=%v", keyID, err)
 		return err
 	}
 	sessionMgr.Rotate(session)
-	log.Printf("握手完成并切换会话: keyID=%d", keyID)
 	return nil
 }
