@@ -158,8 +158,7 @@ func (s *Server) startUDP() {
 
 	log.Printf("✅ UDP 服务端启动成功，监听UDP :%d", Conf.Server.Port)
 
-	peersByRemote := make(map[string]*ClientPeer)
-	peersByPublicKey := make(map[string]*ClientPeer)
+	peers := make(map[string]*ClientPeer)
 	var peersMu sync.Mutex
 	buf := make([]byte, udpPacketBufferSize)
 
@@ -173,31 +172,10 @@ func (s *Server) startUDP() {
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
 
-		frame, err := decodeFrame(pkt)
-		if err != nil {
-			log.Printf("解包UDP帧失败: remote=%s err=%v", remote, err)
-			continue
-		}
-
-		remoteKey := remote.String()
+		key := remote.String()
 
 		peersMu.Lock()
-		peer := peersByRemote[remoteKey]
-		// 握手包里携带了对端长期公钥，优先按“公钥身份”匹配已有 peer，
-		// 避免仅按 remote IP:port 建联导致 NAT 变化后被误判为新客户端。
-		if peer == nil && frame.Type == PacketTypeHandshakeInit {
-			if pubKey, ok := extractHandshakeInitPublicKey(frame.IPPacket); ok {
-				if knownPeer := peersByPublicKey[pubKey]; knownPeer != nil {
-					peer = knownPeer
-					if knownPeer.remote != nil {
-						delete(peersByRemote, knownPeer.remote.String())
-					}
-					remoteCopy := *remote
-					knownPeer.remote = &remoteCopy
-					peersByRemote[remoteKey] = knownPeer
-				}
-			}
-		}
+		peer := peers[key]
 		if peer == nil {
 			remoteCopy := *remote
 			peer = &ClientPeer{
@@ -207,30 +185,25 @@ func (s *Server) startUDP() {
 				sendDone:  make(chan struct{}),
 			}
 			go s.peerSendLoop(peer)
-			peersByRemote[remoteKey] = peer
+			peers[key] = peer
 		}
 		peersMu.Unlock()
 
-		if err := s.handleClientFrame(peer, frame); err != nil {
-			log.Printf("客户端连接状态已重置: remote=%s err=%v", remoteKey, err)
+		if err := s.handleClientPacket(peer, pkt); err != nil {
+			log.Printf("客户端连接状态已重置: remote=%s err=%v", key, err)
 			peersMu.Lock()
-			delete(peersByRemote, remoteKey)
-			if peer.peerPublicKey != "" && peersByPublicKey[peer.peerPublicKey] == peer {
-				delete(peersByPublicKey, peer.peerPublicKey)
-			}
+			delete(peers, key)
 			peersMu.Unlock()
 			s.cleanupClientPeer(peer)
-			continue
-		}
-		if frame.Type == PacketTypeHandshakeInit && peer.peerPublicKey != "" {
-			peersMu.Lock()
-			peersByPublicKey[peer.peerPublicKey] = peer
-			peersMu.Unlock()
 		}
 	}
 }
 
-func (s *Server) handleClientFrame(peer *ClientPeer, frame *TunnelFrame) error {
+func (s *Server) handleClientPacket(peer *ClientPeer, datagram []byte) error {
+	frame, err := decodeFrame(datagram)
+	if err != nil {
+		return err
+	}
 	switch frame.Type {
 	case PacketTypePing:
 		// 客户端保活包。
@@ -250,18 +223,6 @@ func (s *Server) handleClientFrame(peer *ClientPeer, frame *TunnelFrame) error {
 		log.Printf("handleClient收到未识别帧类型: type=%d", frame.Type)
 	}
 	return nil
-}
-
-func extractHandshakeInitPublicKey(msg []byte) (string, bool) {
-	offset := 0
-	if len(msg) >= 68 {
-		offset = 4
-	}
-	if len(msg) < offset+64 {
-		return "", false
-	}
-	pub := msg[offset+32 : offset+64]
-	return base64.StdEncoding.EncodeToString(pub), true
 }
 
 func (s *Server) peerSendLoop(peer *ClientPeer) {
