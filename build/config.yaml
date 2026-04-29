@@ -8,7 +8,7 @@ common:
   # - 作为客户端发起 IK 握手时：第 1 项必须是服务端静态公钥；
 
   # - 作为服务端接收连接时：该列表用于白名单校验；为空则放行任意客户端公钥。
-  peerPublicKeys: ["Y/EjzpsbPnYd8tVxXWFkxelus/a+XpT/+dvkncQATng="]
+  peerPublicKeys: ["erGHtFDqRwrPrF7I2b05K5XmeJrPQSblK4NuWB5i6Ro="]
   mtu: 1300
   proxy: true
   gateway: "172.19.0.254"
