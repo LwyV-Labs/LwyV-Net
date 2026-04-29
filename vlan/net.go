@@ -3,8 +3,8 @@ package vlan
 import (
 	"encoding/binary"
 	"fmt"
-	"io"
 	"net"
+	"sync"
 	"time"
 
 	"golang.zx2c4.com/wireguard/tun"
@@ -101,7 +101,7 @@ func protoName(proto byte) string {
 	}
 }
 
-//=========================== TCP，KCP 配置与读写 ===========================
+//=========================== 隧道帧格式与读写 ===========================
 
 type PacketType uint8
 
@@ -122,29 +122,78 @@ type TunnelFrame struct {
 }
 
 const defaultReadFrameTimeout = 16 * time.Second
+const udpPacketBufferSize = 64 * 1024
 
-// readPacket 读包
-func readFrame(conn net.Conn, maxPayloadSize int, timeout time.Duration) (*TunnelFrame, error) {
+const (
+	// Conf.Common.MTU 的语义：最外层单个 UDP 发送报文的总长度上限（含外层 IP+UDP 头）。
+	defaultOuterPacketMTU = 1400
+
+	// 外层开销（IPv4 + UDP）。
+	outerIPv4HeaderBytes        = 20
+	outerUDPHeaderBytes         = 8
+	outerTransportOverheadBytes = outerIPv4HeaderBytes + outerUDPHeaderBytes
+
+	// 隧道帧开销：[4字节Length][1字节Type]。
+	tunnelFrameHeaderBytes = 5
+
+	// 安全层开销（secure/session.go）：
+	// Encrypt 输出 = 13字节头(keyID+counter+innerType) + AEAD密文(含16字节Tag)。
+	secureHeaderBytes   = 13
+	secureAEADTagBytes  = 16
+	secureOverheadBytes = secureHeaderBytes + secureAEADTagBytes
+
+	// TUN 三层报文的保底 MTU（避免配置过小导致异常）。
+	minInnerIPMTU = 576
+)
+
+func configuredOuterPacketMTU() int {
+	mtu := Conf.Common.MTU
+	if mtu <= 0 {
+		mtu = defaultOuterPacketMTU
+	}
+	return mtu
+}
+
+func securePayloadMTU() int {
+	// 最大 TunnelFrame.Payload（即 UDP 数据中的业务负载）：
+	// outer_total - outer(IP+UDP) - frame_header
+	mtu := configuredOuterPacketMTU() - outerTransportOverheadBytes - tunnelFrameHeaderBytes
+	if mtu < 1 {
+		return 1
+	}
+	return mtu
+}
+
+func tunPayloadMTU() int {
+	// 最大原始 IP 负载（TUN 侧）：
+	// secure_payload_mtu - secure_overhead
+	//
+	// 分层关系（从外到内）：
+	// 1) Conf.Common.MTU：外层总包大小
+	// 2) 减去外层 IP/UDP 头
+	// 3) 减去 TunnelFrame 头，得到 frame payload 上限
+	// 4) 安全数据帧还需减去加密层开销，得到可承载原始 IP 报文的最大长度（TUN MTU）
+	payloadMTU := securePayloadMTU() - secureOverheadBytes
+	if payloadMTU < minInnerIPMTU {
+		payloadMTU = minInnerIPMTU
+	}
+	return payloadMTU
+}
+
+func decodeFrame(datagram []byte) (*TunnelFrame, error) {
 	// 协议格式：
 	// [4字节长度][1字节Type][N字节Payload]
-	if timeout > 0 {
-		_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	if len(datagram) < 5 {
+		return nil, fmt.Errorf("frame too short: %d", len(datagram))
 	}
-	lenBuf := make([]byte, 4)
-	if _, err := io.ReadFull(conn, lenBuf); err != nil {
-		return nil, err
-	}
-
-	frameLen := binary.BigEndian.Uint32(lenBuf)
-	if frameLen < 1 || frameLen > uint32(maxPayloadSize+1) {
+	frameLen := binary.BigEndian.Uint32(datagram[:4])
+	if frameLen < 1 || frameLen > uint32(maxFramePayload()+1) {
 		return nil, fmt.Errorf("invalid frame len: %d", frameLen)
 	}
-
-	raw := make([]byte, frameLen)
-	if _, err := io.ReadFull(conn, raw); err != nil {
-		return nil, err
+	if int(frameLen)+4 != len(datagram) {
+		return nil, fmt.Errorf("frame size mismatch: header=%d actual=%d", frameLen, len(datagram)-4)
 	}
-
+	raw := datagram[4:]
 	payload := raw[1:]
 	frame := &TunnelFrame{
 		// Length 只记录业务负载长度，不包含 Type 字节。
@@ -155,47 +204,93 @@ func readFrame(conn net.Conn, maxPayloadSize int, timeout time.Duration) (*Tunne
 	return frame, nil
 }
 
-// writePacket 写包
-func writeFrame(conn net.Conn, packetType PacketType, payload []byte) error {
+func encodeFrame(packetType PacketType, payload []byte) []byte {
 	buf := make([]byte, 5+len(payload))
 	binary.BigEndian.PutUint32(buf[:4], uint32(1+len(payload)))
 	buf[4] = byte(packetType)
 	copy(buf[5:], payload)
-	return writeAll(conn, buf)
+	return buf
 }
 
-func writeAll(conn net.Conn, buf []byte) error {
-	// net.Conn.Write 可能只写入部分字节，所以循环直到写完。
-	for len(buf) > 0 {
-		n, err := conn.Write(buf)
-		if err != nil {
-			return err
-		}
-		buf = buf[n:]
+func readUDPFrame(conn *net.UDPConn) (*TunnelFrame, error) {
+	_ = conn.SetReadDeadline(time.Now().Add(defaultReadFrameTimeout))
+	buf := make([]byte, udpPacketBufferSize)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return decodeFrame(buf[:n])
+}
+
+func writeUDPFrame(conn *net.UDPConn, packetType PacketType, payload []byte) error {
+	_, err := conn.Write(encodeFrame(packetType, payload))
+	return err
+}
+
+func writeUDPFrameTo(conn *net.UDPConn, remote *net.UDPAddr, packetType PacketType, payload []byte) error {
+	_, err := conn.WriteToUDP(encodeFrame(packetType, payload), remote)
+	return err
 }
 
 func maxFramePayload() int {
-	// 为加密头/控制字段预留额外空间，避免边界溢出。
-	return Conf.Common.MTU + 256
+	// TunnelFrame.Payload 的协议上限（用于解码校验）。
+	// 对于 PacketTypeSecure，它对应密文长度上限；
+	// 对于控制帧，它是统一的 payload 上限。
+	return securePayloadMTU()
+}
+
+func readFrameFromConn(conn net.Conn) (*TunnelFrame, error) {
+	_ = conn.SetReadDeadline(time.Now().Add(defaultReadFrameTimeout))
+	head := make([]byte, 4)
+	if _, err := readFull(conn, head); err != nil {
+		return nil, err
+	}
+	frameLen := binary.BigEndian.Uint32(head)
+	if frameLen < 1 || frameLen > uint32(maxFramePayload()+1) {
+		return nil, fmt.Errorf("invalid frame len: %d", frameLen)
+	}
+	body := make([]byte, frameLen)
+	if _, err := readFull(conn, body); err != nil {
+		return nil, err
+	}
+	return decodeFrame(append(head, body...))
+}
+
+func writeFrameToConn(conn net.Conn, packetType PacketType, payload []byte, mu *sync.Mutex) error {
+	buf := encodeFrame(packetType, payload)
+	mu.Lock()
+	defer mu.Unlock()
+	_, err := conn.Write(buf)
+	return err
+}
+
+func readFull(conn net.Conn, b []byte) (int, error) {
+	off := 0
+	for off < len(b) {
+		n, err := conn.Read(b[off:])
+		off += n
+		if err != nil {
+			return off, err
+		}
+	}
+	return off, nil
 }
 
 //=========================== TUN 读写 ===========================
 
 // writeToTun 写网卡
 func writeToTun(dev tun.Device, pkt []byte) error {
-	fixIPv4Checksums(pkt)
 	_, err := dev.Write([][]byte{pkt}, 0)
 	return err
 }
 
-func readFromTun(dev tun.Device, mtu int) ([][]byte, error) {
+func readFromTun(dev tun.Device) ([][]byte, error) {
 	// BatchSize 表示底层驱动建议一次读取多少包，能减少系统调用次数。
 	batchSize := dev.BatchSize()
 	if batchSize < 1 {
 		batchSize = 1
 	}
+	mtu := tunPayloadMTU()
 
 	bufs := make([][]byte, batchSize)
 	sizes := make([]int, batchSize)
@@ -221,95 +316,4 @@ func readFromTun(dev tun.Device, mtu int) ([][]byte, error) {
 	}
 
 	return packets, nil
-}
-
-func fixIPv4Checksums(pkt []byte) {
-	if len(pkt) < 20 {
-		return
-	}
-
-	version := pkt[0] >> 4
-	if version != 4 {
-		return
-	}
-
-	ihl := int(pkt[0]&0x0F) * 4
-	if ihl < 20 || len(pkt) < ihl {
-		return
-	}
-
-	totalLen := int(binary.BigEndian.Uint16(pkt[2:4]))
-	if totalLen <= 0 || totalLen > len(pkt) {
-		totalLen = len(pkt)
-	}
-	if totalLen < ihl {
-		return
-	}
-
-	// 修 IPv4 header checksum
-	pkt[10] = 0
-	pkt[11] = 0
-	ipSum := checksum16(pkt[:ihl])
-	binary.BigEndian.PutUint16(pkt[10:12], ipSum)
-
-	proto := pkt[9]
-	l4 := pkt[ihl:totalLen]
-
-	switch proto {
-	case 6: // TCP
-		if len(l4) < 20 {
-			return
-		}
-		l4[16] = 0
-		l4[17] = 0
-		sum := transportChecksumIPv4(pkt[12:16], pkt[16:20], proto, l4)
-		binary.BigEndian.PutUint16(l4[16:18], sum)
-
-	case 17: // UDP
-		if len(l4) < 8 {
-			return
-		}
-		l4[6] = 0
-		l4[7] = 0
-		sum := transportChecksumIPv4(pkt[12:16], pkt[16:20], proto, l4)
-
-		// IPv4 UDP checksum 为 0 表示不校验，但我们这里主动填正确值
-		if sum == 0 {
-			sum = 0xffff
-		}
-		binary.BigEndian.PutUint16(l4[6:8], sum)
-	}
-}
-
-func transportChecksumIPv4(src, dst []byte, proto byte, payload []byte) uint16 {
-	pseudoLen := 12 + len(payload)
-	buf := make([]byte, pseudoLen)
-
-	copy(buf[0:4], src)
-	copy(buf[4:8], dst)
-	buf[8] = 0
-	buf[9] = proto
-	binary.BigEndian.PutUint16(buf[10:12], uint16(len(payload)))
-	copy(buf[12:], payload)
-
-	return checksum16(buf)
-}
-
-func checksum16(data []byte) uint16 {
-	var sum uint32
-
-	for len(data) >= 2 {
-		sum += uint32(binary.BigEndian.Uint16(data[:2]))
-		data = data[2:]
-	}
-
-	if len(data) == 1 {
-		sum += uint32(data[0]) << 8
-	}
-
-	for (sum >> 16) != 0 {
-		sum = (sum & 0xffff) + (sum >> 16)
-	}
-
-	return ^uint16(sum)
 }
