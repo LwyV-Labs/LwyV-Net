@@ -287,14 +287,10 @@ func (s *Server) handleVDHCP(peer *ClientPeer, pkt []byte) {
 func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {
 	heardInfo, err := headerParsing(pkt)
 	// 基本校验：源地址必须等于该 peer 分配到的虚拟地址，防止伪造。
-	if err != nil || peer.virtualIP == "" || heardInfo.SrcIP != peer.virtualIP {
+	if err != nil || peer.virtualIP == "" || heardInfo.SrcIP != peer.virtualIP || heardInfo.IsBroadcast {
 		return
 	}
-	if heardInfo.IsBroadcast {
-		// 广播/组播：复制给其它在线 peer。
-		s.broadcastPacket(&heardInfo, pkt)
-		return
-	}
+
 	s.clientTable.RLock()
 	targetPeer, exists := s.clientTable.m[heardInfo.DstIP]
 	s.clientTable.RUnlock()
