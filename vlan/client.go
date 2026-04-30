@@ -38,11 +38,10 @@ func (c *Client) Start() {
 	if err != nil {
 		log.Fatalf("创建虚拟网卡失败: %v", err)
 	}
-	defer dev.Close()
 
-	_ = setup.AllowTunTraffic(Conf.Client.IfName)
-	defer setup.CleanupTunTraffic()
-	defer setup.CleanupClientProxyRouting()
+	if err := setup.AllowTunTraffic(Conf.Client.IfName); err != nil {
+		log.Fatalf("配置TUN策略失败: %v", err)
+	}
 
 	go c.tunToPacketQueue(dev)
 	for {

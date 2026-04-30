@@ -67,7 +67,6 @@ func (s *Server) Start() {
 	if err != nil {
 		log.Fatalf("服务端启动失败: %v", err)
 	}
-	defer listener.Close()
 
 	log.Printf("✅ TCP 服务端启动成功，监听 :%d", Conf.Server.Port)
 	log.Println("📝 等待客户端连接并转发IP包...")
