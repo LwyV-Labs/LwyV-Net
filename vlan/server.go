@@ -94,10 +94,13 @@ func (s *Server) installCleanupSignal() {
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-ch
-		log.Println("收到退出信号，开始清理服务端网关...")
-		setup.DisableServerGatewayNAT()
+		s.cleanup()
 		os.Exit(0)
 	}()
+}
+
+func (s *Server) cleanup() {
+	setup.DisableServerGatewayNAT()
 }
 
 func (s *Server) initVDHCP() error {

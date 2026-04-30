@@ -69,10 +69,14 @@ func (c *Client) installCleanupSignal() {
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-ch
-		setup.CleanupClientProxyRouting()
-		setup.CleanupTunTraffic()
+		c.cleanup()
 		os.Exit(0)
 	}()
+}
+
+func (c *Client) cleanup() {
+	setup.CleanupClientProxyRouting()
+	setup.CleanupTunTraffic()
 }
 
 func (c *Client) runSession(dev tun.Device, conn net.Conn) {
