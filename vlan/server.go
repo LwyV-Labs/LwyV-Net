@@ -18,11 +18,6 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-var (
-	serverTunDev tun.Device
-	serverTunMu  sync.Mutex
-)
-
 type ClientPeer struct {
 	conn          net.Conn
 	mu            sync.Mutex
@@ -75,10 +70,10 @@ func (s *Server) Start() {
 	}
 	s.installCleanupSignal()
 
-	s.startTCPServer()
+	s.startServer()
 }
 
-func (s *Server) startTCPServer() {
+func (s *Server) startServer() {
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", Conf.Server.Port))
 	if err != nil {
 		log.Fatalf("服务端启动失败: %v", err)
@@ -104,7 +99,7 @@ func (s *Server) installCleanupSignal() {
 	go func() {
 		<-ch
 		log.Println("收到退出信号，开始清理服务端网关...")
-		ShutdownServerGateway()
+		setup.DisableServerGatewayNAT()
 		os.Exit(0)
 	}()
 }
@@ -144,23 +139,10 @@ func (s *Server) initGateway() error {
 		return fmt.Errorf("配置服务端NAT失败: %w", err)
 	}
 	s.tunDev = dev
-	serverTunMu.Lock()
-	serverTunDev = dev
-	serverTunMu.Unlock()
 	// 启动下行分发：服务端 TUN -> 对应客户端。
 	go s.tunToClients(dev)
 	log.Printf("✅ 服务端网关已启用: if=%s gw=%s/%s", ifName, Conf.Common.Gateway, mask)
 	return nil
-}
-
-func ShutdownServerGateway() {
-	serverTunMu.Lock()
-	if serverTunDev != nil {
-		_ = serverTunDev.Close()
-		serverTunDev = nil
-	}
-	serverTunMu.Unlock()
-
 }
 
 func (s *Server) handleClient(conn net.Conn) {

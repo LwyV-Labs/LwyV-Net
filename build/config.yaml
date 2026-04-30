@@ -1,6 +1,7 @@
 common:
-    privateKey: zd4rA+6kCJdwiKuRtHACrX0fnylY7nkSOVrtvWjU1VM=
+    privateKey: OeXsRBVD1KIs4Mqj8nIpw4EbCPrHa5WjHvwimYgGj7c=
     peerPublicKeys:
+        - dfWVua+ZYFhQchiYyhgeYroFquD0bf98zHjG6YYv2kE=
     mtu: 1300
     proxy: true
     gateway: 172.19.0.254
