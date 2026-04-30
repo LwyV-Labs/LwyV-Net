@@ -7,10 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"os"
-	"os/signal"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"NetworkSetup/vdhcp"
@@ -35,8 +32,6 @@ func NewClient() *Client {
 	return &Client{tunPacketChan: make(chan []byte, tunPacketQueueSize)}
 }
 
-func StartClient() { NewClient().Start() }
-
 func (c *Client) Start() {
 	// 1) 创建 TUN 网卡；2) 放行本机策略；3) 启动收发循环。
 	dev, err := setup.CreateTun(Conf.Client.IfName, Conf.Common.MTU)
@@ -48,7 +43,6 @@ func (c *Client) Start() {
 	_ = setup.AllowTunTraffic(Conf.Client.IfName)
 	defer setup.CleanupTunTraffic()
 	defer setup.CleanupClientProxyRouting()
-	c.installCleanupSignal()
 
 	go c.tunToPacketQueue(dev)
 	for {
@@ -64,17 +58,7 @@ func (c *Client) Start() {
 	}
 }
 
-func (c *Client) installCleanupSignal() {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-ch
-		c.cleanup()
-		os.Exit(0)
-	}()
-}
-
-func (c *Client) cleanup() {
+func (c *Client) Cleanup() {
 	setup.CleanupClientProxyRouting()
 	setup.CleanupTunTraffic()
 }

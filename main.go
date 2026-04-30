@@ -5,23 +5,41 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 const configPath = "config.yaml"
 
 func main() {
 	mode := parseRunMode(os.Args)
+
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+
 	switch mode {
 	case "genkey":
 		genkey()
 		return
 	case string(vlan.RunModeServer):
 		vlan.InitConfig(configPath, vlan.RunModeServer)
-		vlan.StartServer()
+		server := vlan.NewServer()
+		server.Start()
+		go func() {
+			<-ch
+			server.Cleanup()
+			os.Exit(0)
+		}()
 		return
 	case string(vlan.RunModeClient):
 		vlan.InitConfig(configPath, vlan.RunModeClient)
-		vlan.StartClient()
+		client := vlan.NewClient()
+		client.Start()
+		go func() {
+			<-ch
+			client.Cleanup()
+			os.Exit(0)
+		}()
 		return
 	}
 	log.Fatal("unreachable")

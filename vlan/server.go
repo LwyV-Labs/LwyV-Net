@@ -3,17 +3,13 @@ package vlan
 import (
 	"NetworkSetup/secure"
 	"NetworkSetup/setup"
+	"NetworkSetup/vdhcp"
 	"encoding/base64"
 	"fmt"
 	"log"
 	"net"
-	"os"
-	"os/signal"
 	"sync"
 	"sync/atomic"
-	"syscall"
-
-	"NetworkSetup/vdhcp"
 
 	"golang.zx2c4.com/wireguard/tun"
 )
@@ -55,8 +51,6 @@ func NewServer() *Server {
 	return &Server{clientTable: &KcpClient{m: make(map[string]*ClientPeer)}}
 }
 
-func StartServer() { NewServer().Start() }
-
 func (s *Server) Start() {
 	// 启动顺序：
 	// 1) 初始化地址池（vDHCP）
@@ -68,7 +62,6 @@ func (s *Server) Start() {
 	if err := s.initGateway(); err != nil {
 		log.Fatalf("初始化服务端网关失败: %v", err)
 	}
-	s.installCleanupSignal()
 
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", Conf.Server.Port))
 	if err != nil {
@@ -89,17 +82,7 @@ func (s *Server) Start() {
 	}
 }
 
-func (s *Server) installCleanupSignal() {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-ch
-		s.cleanup()
-		os.Exit(0)
-	}()
-}
-
-func (s *Server) cleanup() {
+func (s *Server) Cleanup() {
 	setup.DisableServerGatewayNAT()
 }
 
