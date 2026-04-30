@@ -70,10 +70,6 @@ func (s *Server) Start() {
 	}
 	s.installCleanupSignal()
 
-	s.startServer()
-}
-
-func (s *Server) startServer() {
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", Conf.Server.Port))
 	if err != nil {
 		log.Fatalf("服务端启动失败: %v", err)

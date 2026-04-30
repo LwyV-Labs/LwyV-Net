@@ -51,7 +51,17 @@ func (c *Client) Start() {
 	c.installCleanupSignal()
 
 	go c.tunToPacketQueue(dev)
-	c.startClient(dev)
+	for {
+		conn, err := net.Dial("tcp", Conf.Client.ServerIP)
+		if err != nil {
+			log.Printf("连接服务端失败: %v，1秒后重试", err)
+			time.Sleep(time.Second)
+			continue
+		}
+		log.Printf("已连接服务端: %s", Conf.Client.ServerIP)
+		c.runSession(dev, conn)
+		time.Sleep(time.Second)
+	}
 }
 
 func (c *Client) installCleanupSignal() {
@@ -63,22 +73,6 @@ func (c *Client) installCleanupSignal() {
 		setup.CleanupTunTraffic()
 		os.Exit(0)
 	}()
-}
-
-func (c *Client) startClient(dev tun.Device) {
-	for {
-		conn, err := net.Dial("tcp", Conf.Client.ServerIP)
-		if err != nil {
-			log.Printf("连接服务端失败: %v，1秒后重试", err)
-			time.Sleep(time.Second)
-			continue
-		}
-		log.Printf("已连接服务端: %s", Conf.Client.ServerIP)
-
-		c.runSession(dev, conn)
-
-		time.Sleep(time.Second)
-	}
 }
 
 func (c *Client) runSession(dev tun.Device, conn net.Conn) {
