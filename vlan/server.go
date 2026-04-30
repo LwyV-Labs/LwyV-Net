@@ -284,20 +284,6 @@ func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {
 	_ = s.enqueuePeerPacket(targetPeer, pkt)
 }
 
-func (s *Server) broadcastPacket(heardInfo *IPHeaderInfo, pkt []byte) {
-	targets := make(map[string]*ClientPeer)
-	s.clientTable.RLock()
-	for ip, targetPeer := range s.clientTable.m {
-		if ip != heardInfo.SrcIP {
-			targets[ip] = targetPeer
-		}
-	}
-	s.clientTable.RUnlock()
-	for _, targetPeer := range targets {
-		_ = s.enqueuePeerPacket(targetPeer, pkt)
-	}
-}
-
 func (s *Server) enqueuePeerPacket(peer *ClientPeer, pkt []byte) error {
 	// 异步发送需要独立缓冲，避免上游切片被复用导致数据错乱。
 	buf := make([]byte, len(pkt))
