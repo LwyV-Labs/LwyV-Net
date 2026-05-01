@@ -69,6 +69,7 @@ func (c *Client) Stop() {
 	setup.CleanupClientProxyRouting()
 	setup.CleanupTunTraffic()
 
+	// 关闭客户端连接
 	if c.conn != nil {
 		if err := c.conn.Close(); err != nil {
 			log.Printf("TCP连接关闭失败: %v", err)
@@ -76,6 +77,7 @@ func (c *Client) Stop() {
 		c.conn = nil
 	}
 
+	// 关闭TUN设备
 	if c.tunDev != nil {
 		if err := c.tunDev.Close(); err != nil {
 			log.Printf("TUN关闭失败: %v", err)

@@ -94,7 +94,9 @@ func (s *Server) Stop() {
 
 	s.stop.Store(true)
 
-	// 1. 关闭监听器，让 Accept() 退出
+	setup.DisableServerGatewayNAT()
+
+	// 关闭监听器，让 Accept() 退出
 	if s.listener != nil {
 		if err := s.listener.Close(); err != nil {
 			log.Printf("关闭服务端监听失败: %v", err)
@@ -102,20 +104,19 @@ func (s *Server) Stop() {
 		s.listener = nil
 	}
 
-	// 2. 关闭所有客户端连接
+	// 关闭所有客户端连接
 	s.clientTable.Lock()
-
 	for _, peer := range s.clientTable.m {
+		// 给发送队列发出信号
 		peer.sendCloseOnce.Do(func() {
 			close(peer.sendDone)
 		})
-
+		// 关闭连接
 		_ = peer.conn.Close()
 	}
-
 	s.clientTable.Unlock()
 
-	// 3. 关闭服务端 TUN
+	// 关闭服务端 TUN
 	if s.tunDev != nil {
 		if err := s.tunDev.Close(); err != nil {
 			log.Printf("关闭服务端TUN失败: %v", err)
@@ -124,7 +125,6 @@ func (s *Server) Stop() {
 	}
 
 	// 4. 清理 NAT / FORWARD 规则
-	setup.DisableServerGatewayNAT()
 
 	log.Printf("服务端已停止")
 
