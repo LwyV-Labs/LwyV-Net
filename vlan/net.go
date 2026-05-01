@@ -1,12 +1,13 @@
 package vlan
 
 import (
-	"LwyV-Net/secure"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
 	"time"
+
+	"github.com/LwyV-Labs/LwyV-Net/secure"
 
 	"golang.zx2c4.com/wireguard/tun"
 )

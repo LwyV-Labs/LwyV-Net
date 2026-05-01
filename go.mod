@@ -1,4 +1,4 @@
-module LwyV-Net
+module github.com/LwyV-Labs/LwyV-Net
 
 go 1.26
 

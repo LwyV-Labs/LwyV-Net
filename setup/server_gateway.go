@@ -1,13 +1,14 @@
 package setup
 
 import (
-	"LwyV-Net/kit"
 	"fmt"
 	"log"
 	"net"
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/LwyV-Labs/LwyV-Net/kit"
 )
 
 type serverGatewayNATState struct {

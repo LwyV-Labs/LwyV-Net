@@ -3,8 +3,8 @@
 package setup
 
 import (
-	"LwyV-Net/kit"
 	"fmt"
+	"github.com/LwyV-Labs/LwyV-Net/kit"
 	"os"
 	"os/exec"
 	"strings"

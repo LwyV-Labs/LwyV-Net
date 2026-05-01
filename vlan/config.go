@@ -1,7 +1,6 @@
 package vlan
 
 import (
-	"LwyV-Net/kit"
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
@@ -11,7 +10,8 @@ import (
 	"os"
 	"strings"
 
-	"LwyV-Net/secure"
+	"github.com/LwyV-Labs/LwyV-Net/kit"
+	"github.com/LwyV-Labs/LwyV-Net/secure"
 
 	"gopkg.in/yaml.v3"
 )

@@ -1,12 +1,13 @@
 package main
 
 import (
-	"LwyV-Net/vlan"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/LwyV-Labs/LwyV-Net/vlan"
 )
 
 const configPath = "config.yaml"

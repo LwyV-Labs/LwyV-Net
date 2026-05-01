@@ -1,15 +1,16 @@
 package vlan
 
 import (
-	"LwyV-Net/secure"
-	"LwyV-Net/setup"
-	"LwyV-Net/vdhcp"
 	"encoding/base64"
 	"fmt"
 	"log"
 	"net"
 	"sync"
 	"sync/atomic"
+
+	"github.com/LwyV-Labs/LwyV-Net/secure"
+	"github.com/LwyV-Labs/LwyV-Net/setup"
+	"github.com/LwyV-Labs/LwyV-Net/vdhcp"
 
 	"golang.zx2c4.com/wireguard/tun"
 )
