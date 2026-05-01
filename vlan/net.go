@@ -1,6 +1,7 @@
 package vlan
 
 import (
+	"NetworkSetup/secure"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -153,6 +154,19 @@ func readFrame(conn net.Conn, maxPayloadSize int, timeout time.Duration) (*Tunne
 		IPPacket: payload,
 	}
 	return frame, nil
+}
+
+// writeSecureFrame 写加密帧
+func writeSecureFrame(conn net.Conn, sessionMgr *secure.SessionManager, packetType PacketType, payload []byte) error {
+	s := sessionMgr.Current()
+	if s == nil {
+		return fmt.Errorf("no active session")
+	}
+	sealed, err := s.Encrypt(byte(packetType), payload)
+	if err != nil {
+		return err
+	}
+	return writeFrame(conn, PacketTypeSecure, sealed)
 }
 
 // writePacket 写包

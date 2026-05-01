@@ -138,7 +138,7 @@ func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) 
 	if err != nil {
 		return "", "", err
 	}
-	if err = c.writeSecureFrame(conn, sessionMgr, PacketTypeVDHCP, discover); err != nil {
+	if err = writeSecureFrame(conn, sessionMgr, PacketTypeVDHCP, discover); err != nil {
 		log.Printf("发送DHCP Discover失败: %v", err)
 		return "", "", err
 	}
@@ -191,7 +191,7 @@ func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr 
 			}
 		case pkt := <-c.tunPacketChan:
 			// 所有业务包都先走会话加密，再发外层 Secure 帧。
-			if err := c.writeSecureFrame(conn, sessionMgr, PacketTypeIP, pkt); err != nil {
+			if err := writeSecureFrame(conn, sessionMgr, PacketTypeIP, pkt); err != nil {
 				return
 			}
 		}
@@ -223,18 +223,6 @@ func (c *Client) connToTun(dev tun.Device, conn net.Conn, sessionMgr *secure.Ses
 			return
 		}
 	}
-}
-
-func (c *Client) writeSecureFrame(conn net.Conn, sessionMgr *secure.SessionManager, packetType PacketType, payload []byte) error {
-	s := sessionMgr.Current()
-	if s == nil {
-		return fmt.Errorf("no active session")
-	}
-	sealed, err := s.Encrypt(byte(packetType), payload)
-	if err != nil {
-		return err
-	}
-	return writeFrame(conn, PacketTypeSecure, sealed)
 }
 
 func (c *Client) performHandshake(conn net.Conn, sessionMgr *secure.SessionManager) error {

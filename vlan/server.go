@@ -21,7 +21,7 @@ type ClientPeer struct {
 	deviceID      string
 	virtualIP     string
 	allowedIPs    []net.IPNet
-	session       *secure.SessionManager
+	sessionMgr    *secure.SessionManager
 	sendQueue     chan []byte
 	sendDone      chan struct{}
 	sendCloseOnce sync.Once
@@ -174,10 +174,10 @@ func (s *Server) initGateway() error {
 func (s *Server) handleClient(conn net.Conn) {
 	// 一个连接对应一个 peer，上面维护其会话和分配到的虚拟 IP。
 	peer := &ClientPeer{
-		conn:      conn,
-		session:   &secure.SessionManager{},
-		sendQueue: make(chan []byte, serverPeerSendQueueSize),
-		sendDone:  make(chan struct{}),
+		conn:       conn,
+		sessionMgr: &secure.SessionManager{},
+		sendQueue:  make(chan []byte, serverPeerSendQueueSize),
+		sendDone:   make(chan struct{}),
 	}
 	go s.peerSendLoop(peer)
 	defer s.cleanupClientPeer(peer)
@@ -222,7 +222,7 @@ func (s *Server) peerSendLoop(peer *ClientPeer) {
 			return
 		case pkt := <-peer.sendQueue:
 			peer.mu.Lock()
-			err := s.writeSecureFrame(peer, PacketTypeIP, pkt)
+			err := writeSecureFrame(peer.conn, peer.sessionMgr, PacketTypeIP, pkt)
 			peer.mu.Unlock()
 			if err != nil {
 				return
@@ -250,6 +250,48 @@ func (s *Server) cleanupClientPeer(peer *ClientPeer) {
 	_ = peer.conn.Close()
 }
 
+func (s *Server) performHandshake(peer *ClientPeer, initMsg []byte) error {
+	// 服务端作为响应方（Responder）完成握手，并拿到对端公钥。
+	if len(Conf.Common.Identity.Private) == 0 {
+		return fmt.Errorf("common.privateKey is required")
+	}
+	hs := secure.NewHandshaker(Conf.Common.Identity, nil)
+	keyID := s.keyID.Add(1)
+	log.Printf("开始处理客户端认证: remote=%s localKeyID=%d", peer.conn.RemoteAddr(), keyID)
+	session, remotePub, err := hs.ResponderHandshake(
+		func(msg []byte) error { return writeFrame(peer.conn, PacketTypeHandshakeResp, msg) },
+		func() ([]byte, error) {
+			if len(initMsg) > 0 {
+				msg := initMsg
+				initMsg = nil
+				return msg, nil
+			}
+			frame, err := readFrame(peer.conn, maxFramePayload(), defaultReadFrameTimeout)
+			if err != nil {
+				return nil, err
+			}
+			if frame.Type != PacketTypeHandshakeInit {
+				return nil, fmt.Errorf("unexpected handshake frame type=%d", frame.Type)
+			}
+			return frame.IPPacket, nil
+		},
+		keyID,
+	)
+	if err != nil {
+		log.Printf("客户端认证失败: remote=%s localKeyID=%d err=%v", peer.conn.RemoteAddr(), keyID, err)
+		return err
+	}
+	if !isPeerStaticAllowed(remotePub) {
+		return fmt.Errorf("peer public key not allowed")
+	}
+	peer.peerPublicKey = base64.StdEncoding.EncodeToString(remotePub)
+	peer.deviceID = secure.DeviceIDFromPublicKey(remotePub)
+	// 用新会话替换旧会话，实现平滑轮转。
+	peer.sessionMgr.Rotate(session)
+	log.Printf("客户端认证通过: remote=%s device=%s", peer.conn.RemoteAddr(), peer.deviceID)
+	return nil
+}
+
 func (s *Server) handlePing(peer *ClientPeer) bool {
 	peer.mu.Lock()
 	defer peer.mu.Unlock()
@@ -258,7 +300,7 @@ func (s *Server) handlePing(peer *ClientPeer) bool {
 
 func (s *Server) handleSecurePacket(peer *ClientPeer, pkt []byte) {
 	// 先解密外层 secure 帧，再看内层业务类型。
-	innerType, plain, err := peer.session.Decrypt(pkt)
+	innerType, plain, err := peer.sessionMgr.Decrypt(pkt)
 	if err != nil {
 		log.Printf("解密数据失败: device=%s err=%v", peer.deviceID, err)
 		return
@@ -287,7 +329,7 @@ func (s *Server) handleVDHCP(peer *ClientPeer, pkt []byte) {
 		// 地址池耗尽时返回 NAK。
 		nak, _ := vdhcp.EncodeNak(err.Error())
 		peer.mu.Lock()
-		_ = s.writeSecureFrame(peer, PacketTypeVDHCP, nak)
+		_ = writeSecureFrame(peer.conn, peer.sessionMgr, PacketTypeVDHCP, nak)
 		peer.mu.Unlock()
 		return
 	}
@@ -296,7 +338,7 @@ func (s *Server) handleVDHCP(peer *ClientPeer, pkt []byte) {
 		return
 	}
 	peer.mu.Lock()
-	err = s.writeSecureFrame(peer, PacketTypeVDHCP, offer)
+	err = writeSecureFrame(peer.conn, peer.sessionMgr, PacketTypeVDHCP, offer)
 	peer.mu.Unlock()
 	if err != nil {
 		return
@@ -337,60 +379,6 @@ func (s *Server) enqueuePeerPacket(peer *ClientPeer, pkt []byte) error {
 	case peer.sendQueue <- buf:
 		return nil
 	}
-}
-
-func (s *Server) writeSecureFrame(peer *ClientPeer, packetType PacketType, payload []byte) error {
-	cs := peer.session.Current()
-	if cs == nil {
-		return fmt.Errorf("no active session")
-	}
-	sealed, err := cs.Encrypt(byte(packetType), payload)
-	if err != nil {
-		return err
-	}
-	return writeFrame(peer.conn, PacketTypeSecure, sealed)
-}
-
-func (s *Server) performHandshake(peer *ClientPeer, initMsg []byte) error {
-	// 服务端作为响应方（Responder）完成握手，并拿到对端公钥。
-	if len(Conf.Common.Identity.Private) == 0 {
-		return fmt.Errorf("common.privateKey is required")
-	}
-	hs := secure.NewHandshaker(Conf.Common.Identity, nil)
-	keyID := s.keyID.Add(1)
-	log.Printf("开始处理客户端认证: remote=%s localKeyID=%d", peer.conn.RemoteAddr(), keyID)
-	session, remotePub, err := hs.ResponderHandshake(
-		func(msg []byte) error { return writeFrame(peer.conn, PacketTypeHandshakeResp, msg) },
-		func() ([]byte, error) {
-			if len(initMsg) > 0 {
-				msg := initMsg
-				initMsg = nil
-				return msg, nil
-			}
-			frame, err := readFrame(peer.conn, maxFramePayload(), defaultReadFrameTimeout)
-			if err != nil {
-				return nil, err
-			}
-			if frame.Type != PacketTypeHandshakeInit {
-				return nil, fmt.Errorf("unexpected handshake frame type=%d", frame.Type)
-			}
-			return frame.IPPacket, nil
-		},
-		keyID,
-	)
-	if err != nil {
-		log.Printf("客户端认证失败: remote=%s localKeyID=%d err=%v", peer.conn.RemoteAddr(), keyID, err)
-		return err
-	}
-	if !isPeerStaticAllowed(remotePub) {
-		return fmt.Errorf("peer public key not allowed")
-	}
-	peer.peerPublicKey = base64.StdEncoding.EncodeToString(remotePub)
-	peer.deviceID = secure.DeviceIDFromPublicKey(remotePub)
-	// 用新会话替换旧会话，实现平滑轮转。
-	peer.session.Rotate(session)
-	log.Printf("客户端认证通过: remote=%s device=%s", peer.conn.RemoteAddr(), peer.deviceID)
-	return nil
 }
 
 func (s *Server) tunToClients(dev tun.Device) {
