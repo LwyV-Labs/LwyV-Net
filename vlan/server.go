@@ -34,11 +34,16 @@ type KcpClient struct {
 
 type Server struct {
 	clientTable *KcpClient
-	tunDev      tun.Device
-	tunMu       sync.Mutex
-	dhcp        *vdhcp.Manager
-	dhcpMask    string
-	keyID       atomic.Uint32
+
+	listener net.Listener
+
+	tunDev tun.Device
+
+	dhcp     *vdhcp.Manager
+	dhcpMask string
+	keyID    atomic.Uint32
+
+	stop atomic.Bool
 }
 
 const (
@@ -67,13 +72,17 @@ func (s *Server) Start() {
 	if err != nil {
 		log.Fatalf("服务端启动失败: %v", err)
 	}
+	s.listener = listener
 
 	log.Printf("✅ TCP 服务端启动成功，监听 :%d", Conf.Server.Port)
 	log.Println("📝 等待客户端连接并转发IP包...")
 
-	for {
+	for !s.stop.Load() {
 		conn, err := listener.Accept()
 		if err != nil {
+			if s.stop.Load() {
+				return
+			}
 			log.Printf("接受连接失败: %v", err)
 			continue
 		}
@@ -81,8 +90,44 @@ func (s *Server) Start() {
 	}
 }
 
-func (s *Server) Cleanup() {
+func (s *Server) Stop() {
+
+	s.stop.Store(true)
+
+	// 1. 关闭监听器，让 Accept() 退出
+	if s.listener != nil {
+		if err := s.listener.Close(); err != nil {
+			log.Printf("关闭服务端监听失败: %v", err)
+		}
+		s.listener = nil
+	}
+
+	// 2. 关闭所有客户端连接
+	s.clientTable.Lock()
+
+	for _, peer := range s.clientTable.m {
+		peer.sendCloseOnce.Do(func() {
+			close(peer.sendDone)
+		})
+
+		_ = peer.conn.Close()
+	}
+
+	s.clientTable.Unlock()
+
+	// 3. 关闭服务端 TUN
+	if s.tunDev != nil {
+		if err := s.tunDev.Close(); err != nil {
+			log.Printf("关闭服务端TUN失败: %v", err)
+		}
+		s.tunDev = nil
+	}
+
+	// 4. 清理 NAT / FORWARD 规则
 	setup.DisableServerGatewayNAT()
+
+	log.Printf("服务端已停止")
+
 }
 
 func (s *Server) initVDHCP() error {
@@ -146,7 +191,6 @@ func (s *Server) handleClient(conn net.Conn) {
 	for {
 		frame, err := readFrame(conn, maxFramePayload(), defaultReadFrameTimeout)
 		if err != nil {
-			log.Printf("客户端读连接失败并断开: remote=%s device=%s err=%v", conn.RemoteAddr(), peer.deviceID, err)
 			return
 		}
 		switch frame.Type {
@@ -277,7 +321,7 @@ func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {
 	s.clientTable.RUnlock()
 	if !exists {
 		// 目标不在客户端表中：交给服务端网关 TUN（若已启用）。
-		_ = s.writeToServerTun(pkt)
+		_ = writeToTun(s.tunDev, pkt)
 		return
 	}
 	_ = s.enqueuePeerPacket(targetPeer, pkt)
@@ -355,15 +399,6 @@ func isPeerStaticAllowed(remotePub []byte) bool {
 	}
 	_, ok := allowedPeerStaticSet[string(remotePub)]
 	return ok
-}
-
-func (s *Server) writeToServerTun(pkt []byte) error {
-	s.tunMu.Lock()
-	defer s.tunMu.Unlock()
-	if s.tunDev == nil {
-		return fmt.Errorf("server TUN is not enabled")
-	}
-	return writeToTun(s.tunDev, pkt)
 }
 
 func (s *Server) tunToClients(dev tun.Device) {

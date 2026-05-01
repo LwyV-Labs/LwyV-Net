@@ -24,25 +24,19 @@ func main() {
 	case string(vlan.RunModeServer):
 		vlan.InitConfig(configPath, vlan.RunModeServer)
 		server := vlan.NewServer()
-		server.Start()
-		go func() {
-			<-ch
-			server.Cleanup()
-			os.Exit(0)
-		}()
+		go server.Start()
+		<-ch
+		server.Stop()
 		return
 	case string(vlan.RunModeClient):
 		vlan.InitConfig(configPath, vlan.RunModeClient)
 		client := vlan.NewClient()
-		client.Start()
-		go func() {
-			<-ch
-			client.Stop()
-			os.Exit(0)
-		}()
+		go client.Start()
+		<-ch
+		client.Stop()
 		return
 	}
-	log.Fatal("unreachable")
+
 }
 
 func parseRunMode(args []string) string {
