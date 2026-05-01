@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -9,8 +8,6 @@ import (
 
 	"github.com/LwyV-Labs/LwyV-Net/vlan"
 )
-
-const configPath = "config.yaml"
 
 func main() {
 	mode := parseRunMode(os.Args)
@@ -20,17 +17,15 @@ func main() {
 
 	switch mode {
 	case "genkey":
-		genkey()
+		vlan.Genkey()
 		return
 	case string(vlan.RunModeServer):
-		vlan.InitConfig(configPath, vlan.RunModeServer)
 		server := vlan.NewServer()
 		go server.Start()
 		<-ch
 		server.Stop()
 		return
 	case string(vlan.RunModeClient):
-		vlan.InitConfig(configPath, vlan.RunModeClient)
 		client := vlan.NewClient()
 		go client.Start()
 		<-ch
@@ -54,25 +49,5 @@ func parseRunMode(args []string) string {
 	default:
 		log.Fatalf("%s is not a valid runType", args[1])
 		return ""
-	}
-}
-
-func genkey() {
-	// 用法：
-	//   ./程序名 genkey
-	//     生成本机 privateKey，写入 config.yaml，并打印本机 publicKey。
-	peerPublicKey := ""
-	if len(os.Args) >= 3 {
-		peerPublicKey = os.Args[2]
-	}
-	publicKey, err := vlan.GenerateAndWriteKeys(configPath, peerPublicKey)
-	if err != nil {
-		log.Fatalf("生成并写入密钥失败: %v", err)
-	}
-	fmt.Println("✅ 已生成新的本机身份密钥，并写入", configPath)
-	fmt.Println("本机 publicKey:", publicKey)
-	fmt.Println("请把上面的 publicKey 填到对端 config.yaml 的 common.peerPublicKeys[0]")
-	if peerPublicKey != "" {
-		fmt.Println("✅ 已同时写入 common.peerPublicKeys[0]")
 	}
 }

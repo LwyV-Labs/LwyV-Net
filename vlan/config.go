@@ -34,7 +34,6 @@ type CommonConfig struct {
 	Proxy          bool            `yaml:"proxy"`
 	Gateway        string          `yaml:"gateway"`
 	SubnetMask     string          `yaml:"subnetMask"`
-	TCPConnections int             `yaml:"tcpConnections"`
 }
 
 // ServerConfig 服务端配置
@@ -66,8 +65,10 @@ const (
 	RunModeServer RunMode = "server"
 )
 
-// InitConfig 加载配置文件
-func InitConfig(path string, mode RunMode) {
+const path = "config.yaml"
+
+// init 自动加载配置文件
+func init() {
 	allowedPeerStaticSet = make(map[string]struct{})
 	// 第一步：把配置文件完整读入内存。
 	data, err := os.ReadFile(path)
@@ -99,10 +100,30 @@ func InitConfig(path string, mode RunMode) {
 	}
 
 	// 第三步：做字段合法性校验 + 衍生字段填充（例如密钥解析）。
-	validateConfig(mode)
+	validateConfig()
 }
 
-func validateConfig(mode RunMode) {
+func Genkey() {
+	// 用法：
+	//   ./程序名 genkey
+	//     生成本机 privateKey，写入 config.yaml，并打印本机 publicKey。
+	peerPublicKey := ""
+	if len(os.Args) >= 3 {
+		peerPublicKey = os.Args[2]
+	}
+	publicKey, err := GenerateAndWriteKeys(path, peerPublicKey)
+	if err != nil {
+		log.Fatalf("生成并写入密钥失败: %v", err)
+	}
+	fmt.Println("✅ 已生成新的本机身份密钥，并写入", path)
+	fmt.Println("本机 publicKey:", publicKey)
+	fmt.Println("请把上面的 publicKey 填到对端 config.yaml 的 common.peerPublicKeys[0]")
+	if peerPublicKey != "" {
+		fmt.Println("✅ 已同时写入 common.peerPublicKeys[0]")
+	}
+}
+
+func validateConfig() {
 	// privateKey / peerPublicKey 在 YAML 中是字符串，
 	// 这里会解析成后续握手加密真正要用的二进制对象。
 	if Conf.Common.PrivateKey != "" {
@@ -127,24 +148,6 @@ func validateConfig(mode RunMode) {
 		allowedPeerStaticSet[string(peer)] = struct{}{}
 	}
 
-	if mode == RunModeServer {
-		// 端口属于高风险配置，先做范围检查。
-		if Conf.Server.Port <= 0 || Conf.Server.Port > 65535 {
-			log.Fatalf("非法服务端端口: %d", Conf.Server.Port)
-		}
-	}
-	if mode == RunModeClient {
-		// 客户端目标地址不能为空（格式校验由 Dial 时再次兜底）。
-		if Conf.Client.ServerIP == "" {
-			log.Fatalf("客户端ServerIP不能为空")
-		}
-	}
-	if Conf.Common.TCPConnections == 0 {
-		Conf.Common.TCPConnections = 16
-	}
-	if Conf.Common.TCPConnections != 16 && Conf.Common.TCPConnections != 32 && Conf.Common.TCPConnections != 64 {
-		log.Fatalf("tcpConnections 仅支持 16/32/64: %d", Conf.Common.TCPConnections)
-	}
 	// 网关、掩码必须能被正确解析。
 	if net.ParseIP(Conf.Common.Gateway) == nil {
 		log.Fatalf("非法网关地址: %s", Conf.Common.Gateway)
