@@ -26,6 +26,10 @@ type Client struct {
 	tunPacketChan chan []byte
 	// keyID：每次握手递增，用于会话轮转标识。
 	keyID atomic.Uint32
+
+	stop   atomic.Bool
+	conn   net.Conn
+	tunDev tun.Device
 }
 
 func NewClient() *Client {
@@ -38,28 +42,48 @@ func (c *Client) Start() {
 	if err != nil {
 		log.Fatalf("创建虚拟网卡失败: %v", err)
 	}
+	c.tunDev = dev
 
 	if err := setup.AllowTunTraffic(Conf.Client.IfName); err != nil {
 		log.Fatalf("配置TUN策略失败: %v", err)
 	}
 
 	go c.tunToPacketQueue(dev)
-	for {
+	for !c.stop.Load() {
 		conn, err := net.Dial("tcp", Conf.Client.ServerIP)
 		if err != nil {
 			log.Printf("连接服务端失败: %v，1秒后重试", err)
 			time.Sleep(time.Second)
 			continue
 		}
+		c.conn = conn
 		log.Printf("已连接服务端: %s", Conf.Client.ServerIP)
 		c.runSession(dev, conn)
 		time.Sleep(time.Second)
 	}
 }
 
-func (c *Client) Cleanup() {
+func (c *Client) Stop() {
+	c.stop.Store(true)
+
 	setup.CleanupClientProxyRouting()
 	setup.CleanupTunTraffic()
+
+	if c.conn != nil {
+		if err := c.conn.Close(); err != nil {
+			log.Printf("TCP连接关闭失败: %v", err)
+		}
+		c.conn = nil
+	}
+
+	if c.tunDev != nil {
+		if err := c.tunDev.Close(); err != nil {
+			log.Printf("TUN关闭失败: %v", err)
+		}
+		c.tunDev = nil
+	}
+
+	log.Printf("客户端已停止")
 }
 
 func (c *Client) runSession(dev tun.Device, conn net.Conn) {
@@ -85,7 +109,7 @@ func (c *Client) runSession(dev tun.Device, conn net.Conn) {
 	}()
 	// 上行：TUN/心跳 -> 网络
 	c.clientSendLoop(conn, done, sessionMgr)
-	_ = conn.Close()
+
 	setup.CleanupClientProxyRouting()
 }
 
@@ -178,7 +202,6 @@ func (c *Client) connToTun(dev tun.Device, conn net.Conn, sessionMgr *secure.Ses
 	for {
 		frame, err := readFrame(conn, maxFramePayload(), defaultReadFrameTimeout)
 		if err != nil {
-			log.Printf("读取服务端数据失败，连接即将重建: %v", err)
 			return
 		}
 		if frame.Type == PacketTypePong {

@@ -37,7 +37,7 @@ func main() {
 		client.Start()
 		go func() {
 			<-ch
-			client.Cleanup()
+			client.Stop()
 			os.Exit(0)
 		}()
 		return
