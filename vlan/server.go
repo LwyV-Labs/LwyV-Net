@@ -361,12 +361,15 @@ func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {
 	s.clientTable.RLock()
 	targetPeer, exists := s.clientTable.m[heardInfo.DstIP]
 	s.clientTable.RUnlock()
-	if !exists {
-		// 目标不在客户端表中：交给服务端网关 TUN（若已启用）。
-		_ = writeToTun(s.tunDev, pkt)
+	// 如果存在就转发
+	if exists {
+		_ = s.enqueuePeerPacket(targetPeer, pkt)
 		return
 	}
-	_ = s.enqueuePeerPacket(targetPeer, pkt)
+	// 如果启动TUN了就代理
+	if s.tunDev != nil {
+		_ = writeToTun(s.tunDev, pkt)
+	}
 }
 
 func (s *Server) enqueuePeerPacket(peer *ClientPeer, pkt []byte) error {

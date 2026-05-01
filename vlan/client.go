@@ -111,8 +111,6 @@ func (c *Client) runSession(dev tun.Device, conn net.Conn) {
 	}()
 	// 上行：TUN/心跳 -> 网络
 	c.clientSendLoop(conn, done, sessionMgr)
-
-	setup.CleanupClientProxyRouting()
 }
 
 func (c *Client) initAddress(conn net.Conn, sessionMgr *secure.SessionManager) error {
