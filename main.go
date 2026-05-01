@@ -1,7 +1,7 @@
 package main
 
 import (
-	"NetworkSetup/vlan"
+	"LwyV-Net/vlan"
 	"fmt"
 	"log"
 	"os"

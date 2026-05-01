@@ -1,9 +1,9 @@
 package vlan
 
 import (
-	"NetworkSetup/secure"
-	"NetworkSetup/setup"
-	"NetworkSetup/vdhcp"
+	"LwyV-Net/secure"
+	"LwyV-Net/setup"
+	"LwyV-Net/vdhcp"
 	"encoding/base64"
 	"fmt"
 	"log"

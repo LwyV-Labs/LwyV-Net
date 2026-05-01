@@ -1,4 +1,4 @@
-module NetworkSetup
+module LwyV-Net
 
 go 1.26
 

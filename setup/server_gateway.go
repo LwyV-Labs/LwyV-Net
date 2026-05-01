@@ -1,7 +1,7 @@
 package setup
 
 import (
-	"NetworkSetup/kit"
+	"LwyV-Net/kit"
 	"fmt"
 	"log"
 	"net"

@@ -1,7 +1,7 @@
 package vlan
 
 import (
-	"NetworkSetup/secure"
+	"LwyV-Net/secure"
 	"encoding/binary"
 	"fmt"
 	"io"

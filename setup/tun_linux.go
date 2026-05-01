@@ -3,7 +3,7 @@
 package setup
 
 import (
-	"NetworkSetup/kit"
+	"LwyV-Net/kit"
 	"fmt"
 	"os"
 	"os/exec"
