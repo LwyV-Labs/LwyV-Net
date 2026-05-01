@@ -68,6 +68,7 @@ const (
 
 // InitConfig 加载配置文件
 func InitConfig(path string, mode RunMode) {
+	allowedPeerStaticSet = make(map[string]struct{})
 	// 第一步：把配置文件完整读入内存。
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -225,4 +226,12 @@ func writeKeysToConfig(path string, privateKey string, peerPublicKey string) err
 		return fmt.Errorf("写入配置文件失败: %w", err)
 	}
 	return nil
+}
+
+func isPeerStaticAllowed(remotePub []byte) bool {
+	if len(allowedPeerStaticSet) == 0 {
+		return true
+	}
+	_, ok := allowedPeerStaticSet[string(remotePub)]
+	return ok
 }

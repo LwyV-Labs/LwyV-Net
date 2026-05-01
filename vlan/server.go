@@ -393,14 +393,6 @@ func (s *Server) performHandshake(peer *ClientPeer, initMsg []byte) error {
 	return nil
 }
 
-func isPeerStaticAllowed(remotePub []byte) bool {
-	if len(allowedPeerStaticSet) == 0 {
-		return true
-	}
-	_, ok := allowedPeerStaticSet[string(remotePub)]
-	return ok
-}
-
 func (s *Server) tunToClients(dev tun.Device) {
 	for {
 		// 从服务端网关 TUN 读到的数据，按目标 IP 发回对应客户端。
