@@ -39,6 +39,7 @@ type Server struct {
 	listener net.Listener
 
 	tunDev tun.Device
+	tun    *TUNTunnel
 
 	dhcp     *vdhcp.Manager
 	dhcpMask string
@@ -166,6 +167,7 @@ func (s *Server) initGateway() error {
 		return fmt.Errorf("配置服务端NAT失败: %w", err)
 	}
 	s.tunDev = dev
+	s.tun = NewTUNTunnel(dev, Conf.Common.MTU)
 	// 启动下行分发：服务端 TUN -> 对应客户端。
 	go s.tunToClients(dev)
 	log.Printf("✅ 服务端网关已启用: if=%s gw=%s/%s", ifName, Conf.Common.Gateway, mask)
@@ -369,7 +371,7 @@ func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {
 	}
 	// 如果启动TUN了就代理
 	if s.tunDev != nil {
-		_ = writeToTun(s.tunDev, pkt)
+		_ = s.tun.Write(pkt)
 	}
 }
 
@@ -388,7 +390,7 @@ func (s *Server) enqueuePeerPacket(peer *ClientPeer, pkt []byte) error {
 func (s *Server) tunToClients(dev tun.Device) {
 	for {
 		// 从服务端网关 TUN 读到的数据，按目标 IP 发回对应客户端。
-		packets, err := readFromTun(dev, Conf.Common.MTU)
+		packets, err := s.tun.ReadBatch()
 		if err != nil {
 			return
 		}
