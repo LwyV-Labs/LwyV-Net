@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/LwyV-Labs/LwyV-Net/secure"
@@ -198,41 +199,57 @@ func maxFramePayload() int {
 
 //=========================== TUN 读写 ===========================
 
-// writeToTun 写网卡
-func writeToTun(dev tun.Device, pkt []byte) error {
-	_, err := dev.Write([][]byte{pkt}, 0)
-	return err
+type TUNTunnel struct {
+	dev       tun.Device
+	readBufs  [][]byte
+	readSizes []int
+	writeBufs [][]byte
+	mu        sync.Mutex
 }
 
-func readFromTun(dev tun.Device, mtu int) ([][]byte, error) {
-	// BatchSize 表示底层驱动建议一次读取多少包，能减少系统调用次数。
+func NewTUNTunnel(dev tun.Device, mtu int) *TUNTunnel {
 	batchSize := dev.BatchSize()
 	if batchSize < 1 {
 		batchSize = 1
 	}
 
-	bufs := make([][]byte, batchSize)
-	sizes := make([]int, batchSize)
-	for i := range bufs {
-		bufs[i] = make([]byte, mtu)
+	readBufs := make([][]byte, batchSize)
+	for i := range readBufs {
+		readBufs[i] = make([]byte, mtu)
 	}
 
-	n, err := dev.Read(bufs, sizes, 0)
+	return &TUNTunnel{
+		dev:       dev,
+		readBufs:  readBufs,
+		readSizes: make([]int, batchSize),
+		writeBufs: make([][]byte, 1),
+	}
+}
+
+func (t *TUNTunnel) ReadBatch() ([][]byte, error) {
+	n, err := t.dev.Read(t.readBufs, t.readSizes, 0)
 	if err != nil {
 		return nil, err
 	}
-
-	// 从复用 buffer 中拷贝出独立切片，避免后续被下一次 Read 覆盖。
 	packets := make([][]byte, 0, n)
 	for i := 0; i < n; i++ {
-		if sizes[i] <= 0 || sizes[i] > len(bufs[i]) {
+		sz := t.readSizes[i]
+		if sz <= 0 || sz > len(t.readBufs[i]) {
 			continue
 		}
-
-		pkt := make([]byte, sizes[i])
-		copy(pkt, bufs[i][:sizes[i]])
-		packets = append(packets, pkt)
+		packets = append(packets, t.readBufs[i][:sz])
 	}
-
 	return packets, nil
+}
+
+func (t *TUNTunnel) Write(pkt []byte) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.writeBufs[0] = pkt
+	_, err := t.dev.Write(t.writeBufs, 0)
+	return err
+}
+
+func (t *TUNTunnel) WriteBatch(packets [][]byte) (int, error) {
+	return t.dev.Write(packets, 0)
 }
