@@ -14,6 +14,7 @@ import (
 )
 
 type ClientPeer struct {
+	stats         trafficCounter
 	conn          net.Conn
 	mu            sync.Mutex
 	peerPublicKey string
@@ -217,6 +218,7 @@ func (s *Server) peerSendLoop(peer *ClientPeer) {
 			if err != nil {
 				return
 			}
+			peer.stats.addUpload(len(pkt))
 		}
 	}
 }
@@ -342,6 +344,7 @@ func (s *Server) handleVDHCP(peer *ClientPeer, pkt []byte) {
 }
 
 func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {
+	peer.stats.addDownload(len(pkt))
 	heardInfo, err := headerParsing(pkt)
 	// 基本校验：源地址必须等于该 peer 分配到的虚拟地址，防止伪造。
 	if err != nil || peer.virtualIP == "" || heardInfo.SrcIP != peer.virtualIP || heardInfo.IsBroadcast {
@@ -389,4 +392,25 @@ func (s *Server) tunToClients() {
 		}
 		_ = s.enqueuePeerPacket(targetPeer, pkt)
 	}
+}
+
+func (s *Server) GetTrafficStatsByIP(virtualIP string) (TrafficStats, bool) {
+	s.clientTable.RLock()
+	peer, ok := s.clientTable.m[virtualIP]
+	s.clientTable.RUnlock()
+	if !ok {
+		return TrafficStats{}, false
+	}
+	return peer.stats.snapshot(), true
+}
+
+func (s *Server) GetTrafficStatsByDeviceID(deviceID string) (TrafficStats, bool) {
+	s.clientTable.RLock()
+	defer s.clientTable.RUnlock()
+	for _, peer := range s.clientTable.m {
+		if peer.deviceID == deviceID {
+			return peer.stats.snapshot(), true
+		}
+	}
+	return TrafficStats{}, false
 }
