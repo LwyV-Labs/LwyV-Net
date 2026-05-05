@@ -27,6 +27,16 @@ type ClientPeer struct {
 	sendCloseOnce sync.Once
 }
 
+type PeerTrafficInfo struct {
+	DeviceID      string
+	VirtualIP     string
+	RemoteAddr    string
+	UploadBytes   uint64
+	DownloadBytes uint64
+	UploadBps     float64
+	DownloadBps   float64
+}
+
 type KcpClient struct {
 	sync.RWMutex
 	m map[string]*ClientPeer
@@ -413,4 +423,23 @@ func (s *Server) GetTrafficStatsByDeviceID(deviceID string) (TrafficStats, bool)
 		}
 	}
 	return TrafficStats{}, false
+}
+
+func (s *Server) ListPeerTraffic() []PeerTrafficInfo {
+	s.clientTable.RLock()
+	defer s.clientTable.RUnlock()
+	peers := make([]PeerTrafficInfo, 0, len(s.clientTable.m))
+	for _, peer := range s.clientTable.m {
+		stats := peer.stats.snapshot()
+		peers = append(peers, PeerTrafficInfo{
+			DeviceID:      peer.deviceID,
+			VirtualIP:     peer.virtualIP,
+			RemoteAddr:    peer.conn.RemoteAddr().String(),
+			UploadBytes:   stats.UploadBytes,
+			DownloadBytes: stats.DownloadBytes,
+			UploadBps:     stats.UploadBps,
+			DownloadBps:   stats.DownloadBps,
+		})
+	}
+	return peers
 }
