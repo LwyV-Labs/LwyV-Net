@@ -5,12 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/LwyV-Labs/LwyV-Net/secure"
-
-	"golang.zx2c4.com/wireguard/tun"
 )
 
 //=========================== IP 报文解析 ===========================
@@ -195,61 +192,4 @@ func writeAll(conn net.Conn, buf []byte) error {
 func maxFramePayload() int {
 	// 为加密头/控制字段预留额外空间，避免边界溢出。
 	return Conf.Common.MTU + 256
-}
-
-//=========================== TUN 读写 ===========================
-
-type TUNTunnel struct {
-	dev       tun.Device
-	readBufs  [][]byte
-	readSizes []int
-	writeBufs [][]byte
-	mu        sync.Mutex
-}
-
-func NewTUNTunnel(dev tun.Device, mtu int) *TUNTunnel {
-	batchSize := dev.BatchSize()
-	if batchSize < 1 {
-		batchSize = 1
-	}
-
-	readBufs := make([][]byte, batchSize)
-	for i := range readBufs {
-		readBufs[i] = make([]byte, mtu)
-	}
-
-	return &TUNTunnel{
-		dev:       dev,
-		readBufs:  readBufs,
-		readSizes: make([]int, batchSize),
-		writeBufs: make([][]byte, 1),
-	}
-}
-
-func (t *TUNTunnel) ReadBatch() ([][]byte, error) {
-	n, err := t.dev.Read(t.readBufs, t.readSizes, 0)
-	if err != nil {
-		return nil, err
-	}
-	packets := make([][]byte, 0, n)
-	for i := 0; i < n; i++ {
-		sz := t.readSizes[i]
-		if sz <= 0 || sz > len(t.readBufs[i]) {
-			continue
-		}
-		packets = append(packets, t.readBufs[i][:sz])
-	}
-	return packets, nil
-}
-
-func (t *TUNTunnel) Write(pkt []byte) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.writeBufs[0] = pkt
-	_, err := t.dev.Write(t.writeBufs, 0)
-	return err
-}
-
-func (t *TUNTunnel) WriteBatch(packets [][]byte) (int, error) {
-	return t.dev.Write(packets, 0)
 }

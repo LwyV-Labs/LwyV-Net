@@ -18,7 +18,6 @@ import (
 const (
 	heartbeatInterval  = 5 * time.Second
 	heartbeatFluctuate = 1 * time.Second
-	tunPacketQueueSize = 16 * 1024
 )
 
 type Client struct {
@@ -167,7 +166,7 @@ func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) 
 
 func (c *Client) tunToPacketQueue() {
 	for {
-		packets, err := c.tun.ReadBatch()
+		packets, err := c.tun.Read()
 		if err != nil {
 			return
 		}
@@ -219,7 +218,7 @@ func (c *Client) connToTun(conn net.Conn, sessionMgr *secure.SessionManager) {
 			log.Printf("解密业务数据失败: err=%v innerType=%d", err, innerType)
 			continue
 		}
-		if err = c.tun.Write(plain); err != nil {
+		if _, err = c.tun.Write([][]byte{plain}); err != nil {
 			// TUN 写失败通常意味着网卡已关闭或系统层异常。
 			log.Printf("写入TUN失败: %v", err)
 			return

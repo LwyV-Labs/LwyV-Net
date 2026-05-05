@@ -371,7 +371,7 @@ func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {
 	}
 	// 如果启动TUN了就代理
 	if s.tunDev != nil {
-		_ = s.tun.Write(pkt)
+		_, _ = s.tun.Write([][]byte{pkt})
 	}
 }
 
@@ -390,7 +390,7 @@ func (s *Server) enqueuePeerPacket(peer *ClientPeer, pkt []byte) error {
 func (s *Server) tunToClients(dev tun.Device) {
 	for {
 		// 从服务端网关 TUN 读到的数据，按目标 IP 发回对应客户端。
-		packets, err := s.tun.ReadBatch()
+		packets, err := s.tun.Read()
 		if err != nil {
 			return
 		}
