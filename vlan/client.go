@@ -21,8 +21,6 @@ const (
 )
 
 type Client struct {
-	// tunPacketChan：把“读 TUN”和“写网络”解耦，避免互相阻塞。
-	tunPacketChan chan []byte
 	// keyID：每次握手递增，用于会话轮转标识。
 	keyID atomic.Uint32
 
@@ -33,7 +31,7 @@ type Client struct {
 }
 
 func NewClient() *Client {
-	return &Client{tunPacketChan: make(chan []byte, tunPacketQueueSize)}
+	return &Client{}
 }
 
 func (c *Client) Start() {
@@ -49,7 +47,6 @@ func (c *Client) Start() {
 		log.Fatalf("配置TUN策略失败: %v", err)
 	}
 
-	go c.tunToPacketQueue()
 	for !c.stop.Load() {
 		conn, err := net.Dial("tcp", Conf.Client.ServerIP)
 		if err != nil {
@@ -78,8 +75,14 @@ func (c *Client) Stop() {
 		c.conn = nil
 	}
 
-	// 关闭TUN设备
-	if c.tunDev != nil {
+	// 关闭TUN设备。优先关闭 TUNTunnel，让内部读写 goroutine 一起退出。
+	if c.tun != nil {
+		if err := c.tun.Close(); err != nil {
+			log.Printf("TUN关闭失败: %v", err)
+		}
+		c.tun = nil
+		c.tunDev = nil
+	} else if c.tunDev != nil {
 		if err := c.tunDev.Close(); err != nil {
 			log.Printf("TUN关闭失败: %v", err)
 		}
@@ -164,20 +167,6 @@ func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) 
 	return msg.IP, msg.SubnetMask, nil
 }
 
-func (c *Client) tunToPacketQueue() {
-	for {
-		packets, err := c.tun.Read()
-		if err != nil {
-			return
-		}
-		for _, pkt := range packets {
-			// 队列满时采用背压（阻塞等待），不做静默丢包。
-			// 否则 TCP 会在隧道入口发生周期性丢包，表现为吞吐抖动。
-			c.tunPacketChan <- pkt
-		}
-	}
-}
-
 func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr *secure.SessionManager) {
 	ticker := time.NewTicker(kit.RandomInterval(heartbeatInterval, heartbeatFluctuate))
 	defer ticker.Stop()
@@ -190,7 +179,10 @@ func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr 
 			if err := writeFrame(conn, PacketTypePing, nil); err != nil {
 				return
 			}
-		case pkt := <-c.tunPacketChan:
+		case pkt, ok := <-c.tun.ReadChan():
+			if !ok {
+				return
+			}
 			// 所有业务包都先走会话加密，再发外层 Secure 帧。
 			if err := writeSecureFrame(conn, sessionMgr, PacketTypeIP, pkt); err != nil {
 				return
@@ -218,7 +210,7 @@ func (c *Client) connToTun(conn net.Conn, sessionMgr *secure.SessionManager) {
 			log.Printf("解密业务数据失败: err=%v innerType=%d", err, innerType)
 			continue
 		}
-		if _, err = c.tun.Write([][]byte{plain}); err != nil {
+		if err = c.tun.Write(plain); err != nil {
 			// TUN 写失败通常意味着网卡已关闭或系统层异常。
 			log.Printf("写入TUN失败: %v", err)
 			return

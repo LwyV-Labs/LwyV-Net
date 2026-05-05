@@ -118,8 +118,14 @@ func (s *Server) Stop() {
 	}
 	s.clientTable.Unlock()
 
-	// 关闭服务端 TUN
-	if s.tunDev != nil {
+	// 关闭服务端 TUN。优先关闭 TUNTunnel，让内部读写 goroutine 一起退出。
+	if s.tun != nil {
+		if err := s.tun.Close(); err != nil {
+			log.Printf("关闭服务端TUN失败: %v", err)
+		}
+		s.tun = nil
+		s.tunDev = nil
+	} else if s.tunDev != nil {
 		if err := s.tunDev.Close(); err != nil {
 			log.Printf("关闭服务端TUN失败: %v", err)
 		}
@@ -169,7 +175,7 @@ func (s *Server) initGateway() error {
 	s.tunDev = dev
 	s.tun = NewTUNTunnel(dev, Conf.Common.MTU)
 	// 启动下行分发：服务端 TUN -> 对应客户端。
-	go s.tunToClients(dev)
+	go s.tunToClients()
 	log.Printf("✅ 服务端网关已启用: if=%s gw=%s/%s", ifName, Conf.Common.Gateway, mask)
 	return nil
 }
@@ -370,8 +376,8 @@ func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {
 		return
 	}
 	// 如果启动TUN了就代理
-	if s.tunDev != nil {
-		_, _ = s.tun.Write([][]byte{pkt})
+	if s.tun != nil {
+		_ = s.tun.Write(pkt)
 	}
 }
 
@@ -387,25 +393,19 @@ func (s *Server) enqueuePeerPacket(peer *ClientPeer, pkt []byte) error {
 	}
 }
 
-func (s *Server) tunToClients(dev tun.Device) {
-	for {
-		// 从服务端网关 TUN 读到的数据，按目标 IP 发回对应客户端。
-		packets, err := s.tun.Read()
+func (s *Server) tunToClients() {
+	// 从服务端网关 TUN 读到的数据，按目标 IP 发回对应客户端。
+	for pkt := range s.tun.ReadChan() {
+		heardInfo, err := headerParsing(pkt)
 		if err != nil {
-			return
+			continue
 		}
-		for _, pkt := range packets {
-			heardInfo, err := headerParsing(pkt)
-			if err != nil {
-				continue
-			}
-			s.clientTable.RLock()
-			targetPeer, exists := s.clientTable.m[heardInfo.DstIP]
-			s.clientTable.RUnlock()
-			if !exists {
-				continue
-			}
-			_ = s.enqueuePeerPacket(targetPeer, pkt)
+		s.clientTable.RLock()
+		targetPeer, exists := s.clientTable.m[heardInfo.DstIP]
+		s.clientTable.RUnlock()
+		if !exists {
+			continue
 		}
+		_ = s.enqueuePeerPacket(targetPeer, pkt)
 	}
 }
