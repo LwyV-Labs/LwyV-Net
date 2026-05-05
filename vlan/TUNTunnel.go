@@ -155,14 +155,11 @@ func (t *TUNTunnel) writeLoop() {
 			}
 		}
 
-		n, err := t.dev.Write(batch, 0)
-		if err != nil {
+		// 注意：不同平台/实现返回的 n 语义可能不是“包数量”。
+		// 你当前 Linux TUN 返回的是写入字节数，比如 66。
+		// 所以这里只判断 err。
+		if _, err := t.dev.Write(batch, 0); err != nil {
 			log.Printf("tun write failed: %v", err)
-			t.Close()
-			return
-		}
-		if n != len(batch) {
-			log.Printf("tun write incomplete: wrote=%d want=%d", n, len(batch))
 			t.Close()
 			return
 		}
