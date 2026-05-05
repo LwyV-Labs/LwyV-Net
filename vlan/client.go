@@ -18,22 +18,20 @@ import (
 const (
 	heartbeatInterval  = 5 * time.Second
 	heartbeatFluctuate = 1 * time.Second
-	tunPacketQueueSize = 16 * 1024
 )
 
 type Client struct {
-	// tunPacketChan：把“读 TUN”和“写网络”解耦，避免互相阻塞。
-	tunPacketChan chan []byte
 	// keyID：每次握手递增，用于会话轮转标识。
 	keyID atomic.Uint32
 
 	stop   atomic.Bool
 	conn   net.Conn
 	tunDev tun.Device
+	tun    *TUNTunnel
 }
 
 func NewClient() *Client {
-	return &Client{tunPacketChan: make(chan []byte, tunPacketQueueSize)}
+	return &Client{}
 }
 
 func (c *Client) Start() {
@@ -43,12 +41,12 @@ func (c *Client) Start() {
 		log.Fatalf("创建虚拟网卡失败: %v", err)
 	}
 	c.tunDev = dev
+	c.tun = NewTUNTunnel(dev, Conf.Common.MTU)
 
 	if err := setup.AllowTunTraffic(Conf.Client.IfName); err != nil {
 		log.Fatalf("配置TUN策略失败: %v", err)
 	}
 
-	go c.tunToPacketQueue(dev)
 	for !c.stop.Load() {
 		conn, err := net.Dial("tcp", Conf.Client.ServerIP)
 		if err != nil {
@@ -58,7 +56,7 @@ func (c *Client) Start() {
 		}
 		c.conn = conn
 		log.Printf("已连接服务端: %s", Conf.Client.ServerIP)
-		c.runSession(dev, conn)
+		c.runSession(conn)
 		time.Sleep(time.Second)
 	}
 }
@@ -78,6 +76,14 @@ func (c *Client) Stop() {
 	}
 
 	// 关闭TUN设备
+	if c.tun != nil {
+		if err := c.tun.Close(); err != nil {
+			log.Printf("TUN关闭失败: %v", err)
+		}
+		c.tun = nil
+		c.tunDev = nil
+	}
+
 	if c.tunDev != nil {
 		if err := c.tunDev.Close(); err != nil {
 			log.Printf("TUN关闭失败: %v", err)
@@ -88,7 +94,7 @@ func (c *Client) Stop() {
 	log.Printf("客户端已停止")
 }
 
-func (c *Client) runSession(dev tun.Device, conn net.Conn) {
+func (c *Client) runSession(conn net.Conn) {
 	// 每次连接对应一个会话管理器（保存当前密钥状态）。
 	sessionMgr := &secure.SessionManager{}
 	if err := c.performHandshake(conn, sessionMgr); err != nil {
@@ -107,7 +113,7 @@ func (c *Client) runSession(dev tun.Device, conn net.Conn) {
 	go func() {
 		defer close(done)
 		// 下行：网络 -> TUN
-		c.connToTun(dev, conn, sessionMgr)
+		c.connToTun(conn, sessionMgr)
 	}()
 	// 上行：TUN/心跳 -> 网络
 	c.clientSendLoop(conn, done, sessionMgr)
@@ -163,20 +169,6 @@ func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) 
 	return msg.IP, msg.SubnetMask, nil
 }
 
-func (c *Client) tunToPacketQueue(dev tun.Device) {
-	for {
-		packets, err := readFromTun(dev, Conf.Common.MTU)
-		if err != nil {
-			return
-		}
-		for _, pkt := range packets {
-			// 队列满时采用背压（阻塞等待），不做静默丢包。
-			// 否则 TCP 会在隧道入口发生周期性丢包，表现为吞吐抖动。
-			c.tunPacketChan <- pkt
-		}
-	}
-}
-
 func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr *secure.SessionManager) {
 	ticker := time.NewTicker(kit.RandomInterval(heartbeatInterval, heartbeatFluctuate))
 	defer ticker.Stop()
@@ -189,7 +181,10 @@ func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr 
 			if err := writeFrame(conn, PacketTypePing, nil); err != nil {
 				return
 			}
-		case pkt := <-c.tunPacketChan:
+		case pkt, ok := <-c.tun.ReadChan():
+			if !ok {
+				return
+			}
 			// 所有业务包都先走会话加密，再发外层 Secure 帧。
 			if err := writeSecureFrame(conn, sessionMgr, PacketTypeIP, pkt); err != nil {
 				return
@@ -198,7 +193,7 @@ func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr 
 	}
 }
 
-func (c *Client) connToTun(dev tun.Device, conn net.Conn, sessionMgr *secure.SessionManager) {
+func (c *Client) connToTun(conn net.Conn, sessionMgr *secure.SessionManager) {
 	for {
 		frame, err := readFrame(conn, maxFramePayload(), defaultReadFrameTimeout)
 		if err != nil {
@@ -217,11 +212,7 @@ func (c *Client) connToTun(dev tun.Device, conn net.Conn, sessionMgr *secure.Ses
 			log.Printf("解密业务数据失败: err=%v innerType=%d", err, innerType)
 			continue
 		}
-		if err = writeToTun(dev, plain); err != nil {
-			// TUN 写失败通常意味着网卡已关闭或系统层异常。
-			log.Printf("写入TUN失败: %v", err)
-			return
-		}
+		c.tun.WriteChan() <- plain
 	}
 }
 
