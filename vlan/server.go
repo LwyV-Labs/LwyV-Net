@@ -125,10 +125,7 @@ func (s *Server) Stop() {
 		s.tun = nil
 	}
 
-	// 4. 清理 NAT / FORWARD 规则
-
 	log.Printf("服务端已停止")
-
 }
 
 func (s *Server) initVDHCP() error {

@@ -51,6 +51,13 @@ LwyV-Net 主要解决“设备都在公网、网络环境复杂、但又希望�
 - 🔜 可审计的访问控制策略
 
 ---
+## 打包
+```bash
+go build -trimpath -buildvcs=false -ldflags="-s -w" -o build/LwyV-Net.exe .
+
+$env:CGO_ENABLED=0; $env:GOOS="linux"; $env:GOARCH="amd64";go build -trimpath -buildvcs=false -ldflags="-s -w" -o build/LwyV-Net .
+
+```
 
 ## 快速运行（保持简单）
 
@@ -86,6 +93,7 @@ sudo ./build/lwyv-net server
 
 ```bash
 sudo ./build/lwyv-net client
+
 ```
 
 > 不传参数默认按客户端启动，即 `./build/lwyv-net` 等同于 `./build/lwyv-net client`。
