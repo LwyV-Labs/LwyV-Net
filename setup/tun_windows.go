@@ -6,12 +6,18 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"golang.zx2c4.com/wireguard/tun"
 )
 
 const (
 	fwRuleIn  = "VLAN_NET_ALLOW_ALL_IN"
 	fwRuleOut = "VLAN_NET_ALLOW_ALL_OUT"
 )
+
+func CreateTun(name string, mtu int) (tun.Device, error) {
+	return tun.CreateTUN(name, mtu)
+}
 
 func RunPowerShell(ps string) error {
 	cmd := exec.Command(

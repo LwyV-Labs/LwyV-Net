@@ -2,7 +2,6 @@ package vlan
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"sync"
 
@@ -34,13 +33,7 @@ type TUNTunnel struct {
 	closeErr  error
 }
 
-func NewTUNTunnel(ifName string, mtu int) (*TUNTunnel, error) {
-	dev, err := tun.CreateTUN(ifName, mtu)
-
-	if err != nil {
-		return nil, fmt.Errorf("创建虚拟网卡失败: %w", err)
-	}
-
+func NewTUNTunnel(dev tun.Device, mtu int) *TUNTunnel {
 	batchSize := dev.BatchSize()
 	if batchSize < 1 {
 		batchSize = 1
@@ -64,7 +57,7 @@ func NewTUNTunnel(ifName string, mtu int) (*TUNTunnel, error) {
 	go t.readLoop()
 	go t.writeLoop()
 
-	return t, nil
+	return t
 }
 
 func (t *TUNTunnel) ReadChan() <-chan []byte {
