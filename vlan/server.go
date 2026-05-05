@@ -63,9 +63,11 @@ func (s *Server) Start() {
 	if err := s.initVDHCP(); err != nil {
 		log.Fatalf("初始化虚拟DHCP失败: %v", err)
 	}
+	log.Printf("✅ 虚拟DHCP已启用: %s - %s", Conf.VDHCP.StartIP, Conf.VDHCP.EndIP)
 	if err := s.initGateway(); err != nil {
 		log.Fatalf("初始化服务端网关失败: %v", err)
 	}
+	log.Printf("✅ 服务端网关已启用: if=%s gw=%s/%s", Conf.Server.IfName, Conf.Common.Gateway, Conf.Common.SubnetMask)
 
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", Conf.Server.Port))
 	if err != nil {
@@ -136,7 +138,6 @@ func (s *Server) initVDHCP() error {
 	}
 	s.dhcp = manager
 	s.dhcpMask = Conf.Common.SubnetMask
-	log.Printf("✅ 虚拟DHCP已启用: %s - %s", Conf.VDHCP.StartIP, Conf.VDHCP.EndIP)
 	return nil
 }
 
@@ -145,28 +146,22 @@ func (s *Server) initGateway() error {
 	if !Conf.Common.Proxy {
 		return nil
 	}
-	ifName := Conf.Server.IfName
-	if ifName == "" {
-		ifName = "LwyV-Gateway"
-	}
-	mask := Conf.Common.SubnetMask
-	dev, err := setup.CreateTun(ifName, Conf.Common.MTU)
+
+	var err error
+	s.tun, err = NewTUNTunnel(Conf.Server.IfName, Conf.Common.MTU)
 	if err != nil {
-		return fmt.Errorf("创建服务端TUN失败: %w", err)
+		return err
 	}
 
-	if err = setup.ConfigureTunAddress(ifName, Conf.Common.Gateway, mask); err != nil {
-		_ = dev.Close()
+	if err = setup.ConfigureTunAddress(Conf.Server.IfName, Conf.Common.Gateway, Conf.Common.SubnetMask); err != nil {
 		return fmt.Errorf("配置服务端TUN地址失败: %w", err)
 	}
-	if err = setup.EnableServerGatewayNAT(ifName, Conf.Common.Gateway, mask, Conf.Server.EgressIf); err != nil {
-		_ = dev.Close()
+	if err = setup.EnableServerGatewayNAT(Conf.Server.IfName, Conf.Common.Gateway, Conf.Common.SubnetMask, Conf.Server.EgressIf); err != nil {
 		return fmt.Errorf("配置服务端NAT失败: %w", err)
 	}
-	s.tun = NewTUNTunnel(dev, Conf.Common.MTU)
+
 	// 启动下行分发：服务端 TUN -> 对应客户端。
 	go s.tunToClients()
-	log.Printf("✅ 服务端网关已启用: if=%s gw=%s/%s", ifName, Conf.Common.Gateway, mask)
 	return nil
 }
 

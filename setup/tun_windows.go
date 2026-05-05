@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
-
-	"golang.zx2c4.com/wireguard/tun"
 )
 
 const (
@@ -73,10 +71,6 @@ Get-NetFirewallRule -DisplayName %q -ErrorAction SilentlyContinue | Remove-NetFi
 `, fwRuleIn, fwRuleOut)
 
 	return RunPowerShell(ps)
-}
-
-func CreateTun(name string, mtu int) (tun.Device, error) {
-	return tun.CreateTUN(name, mtu)
 }
 
 func ConfigureTunAddress(ifName, ip, mask string) error {
