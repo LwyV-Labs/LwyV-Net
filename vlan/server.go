@@ -14,6 +14,7 @@ import (
 )
 
 type ClientPeer struct {
+	stats         trafficCounter
 	conn          net.Conn
 	mu            sync.Mutex
 	peerPublicKey string
@@ -24,6 +25,16 @@ type ClientPeer struct {
 	sendQueue     chan []byte
 	sendDone      chan struct{}
 	sendCloseOnce sync.Once
+}
+
+type PeerTrafficInfo struct {
+	DeviceID      string
+	VirtualIP     string
+	RemoteAddr    string
+	UploadBytes   uint64
+	DownloadBytes uint64
+	UploadBps     float64
+	DownloadBps   float64
 }
 
 type KcpClient struct {
@@ -217,6 +228,7 @@ func (s *Server) peerSendLoop(peer *ClientPeer) {
 			if err != nil {
 				return
 			}
+			peer.stats.addUpload(len(pkt))
 		}
 	}
 }
@@ -342,6 +354,7 @@ func (s *Server) handleVDHCP(peer *ClientPeer, pkt []byte) {
 }
 
 func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {
+	peer.stats.addDownload(len(pkt))
 	heardInfo, err := headerParsing(pkt)
 	// 基本校验：源地址必须等于该 peer 分配到的虚拟地址，防止伪造。
 	if err != nil || peer.virtualIP == "" || heardInfo.SrcIP != peer.virtualIP || heardInfo.IsBroadcast {
@@ -389,4 +402,44 @@ func (s *Server) tunToClients() {
 		}
 		_ = s.enqueuePeerPacket(targetPeer, pkt)
 	}
+}
+
+func (s *Server) GetTrafficStatsByIP(virtualIP string) (TrafficStats, bool) {
+	s.clientTable.RLock()
+	peer, ok := s.clientTable.m[virtualIP]
+	s.clientTable.RUnlock()
+	if !ok {
+		return TrafficStats{}, false
+	}
+	return peer.stats.snapshot(), true
+}
+
+func (s *Server) GetTrafficStatsByDeviceID(deviceID string) (TrafficStats, bool) {
+	s.clientTable.RLock()
+	defer s.clientTable.RUnlock()
+	for _, peer := range s.clientTable.m {
+		if peer.deviceID == deviceID {
+			return peer.stats.snapshot(), true
+		}
+	}
+	return TrafficStats{}, false
+}
+
+func (s *Server) ListPeerTraffic() []PeerTrafficInfo {
+	s.clientTable.RLock()
+	defer s.clientTable.RUnlock()
+	peers := make([]PeerTrafficInfo, 0, len(s.clientTable.m))
+	for _, peer := range s.clientTable.m {
+		stats := peer.stats.snapshot()
+		peers = append(peers, PeerTrafficInfo{
+			DeviceID:      peer.deviceID,
+			VirtualIP:     peer.virtualIP,
+			RemoteAddr:    peer.conn.RemoteAddr().String(),
+			UploadBytes:   stats.UploadBytes,
+			DownloadBytes: stats.DownloadBytes,
+			UploadBps:     stats.UploadBps,
+			DownloadBps:   stats.DownloadBps,
+		})
+	}
+	return peers
 }
