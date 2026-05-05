@@ -11,8 +11,6 @@ import (
 	"github.com/LwyV-Labs/LwyV-Net/secure"
 	"github.com/LwyV-Labs/LwyV-Net/setup"
 	"github.com/LwyV-Labs/LwyV-Net/vdhcp"
-
-	"golang.zx2c4.com/wireguard/tun"
 )
 
 type ClientPeer struct {
@@ -38,8 +36,7 @@ type Server struct {
 
 	listener net.Listener
 
-	tunDev tun.Device
-	tun    *TUNTunnel
+	tun *TUNTunnel
 
 	dhcp     *vdhcp.Manager
 	dhcpMask string
@@ -124,12 +121,6 @@ func (s *Server) Stop() {
 			log.Printf("关闭服务端TUN失败: %v", err)
 		}
 		s.tun = nil
-		s.tunDev = nil
-	} else if s.tunDev != nil {
-		if err := s.tunDev.Close(); err != nil {
-			log.Printf("关闭服务端TUN失败: %v", err)
-		}
-		s.tunDev = nil
 	}
 
 	// 4. 清理 NAT / FORWARD 规则
@@ -172,7 +163,6 @@ func (s *Server) initGateway() error {
 		_ = dev.Close()
 		return fmt.Errorf("配置服务端NAT失败: %w", err)
 	}
-	s.tunDev = dev
 	s.tun = NewTUNTunnel(dev, Conf.Common.MTU)
 	// 启动下行分发：服务端 TUN -> 对应客户端。
 	go s.tunToClients()

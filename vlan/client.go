@@ -11,8 +11,6 @@ import (
 	"github.com/LwyV-Labs/LwyV-Net/secure"
 	"github.com/LwyV-Labs/LwyV-Net/setup"
 	"github.com/LwyV-Labs/LwyV-Net/vdhcp"
-
-	"golang.zx2c4.com/wireguard/tun"
 )
 
 const (
@@ -24,10 +22,9 @@ type Client struct {
 	// keyID：每次握手递增，用于会话轮转标识。
 	keyID atomic.Uint32
 
-	stop   atomic.Bool
-	conn   net.Conn
-	tunDev tun.Device
-	tun    *TUNTunnel
+	stop atomic.Bool
+	conn net.Conn
+	tun  *TUNTunnel
 }
 
 func NewClient() *Client {
@@ -40,7 +37,6 @@ func (c *Client) Start() {
 	if err != nil {
 		log.Fatalf("创建虚拟网卡失败: %v", err)
 	}
-	c.tunDev = dev
 	c.tun = NewTUNTunnel(dev, Conf.Common.MTU)
 
 	if err := setup.AllowTunTraffic(Conf.Client.IfName); err != nil {
@@ -81,12 +77,6 @@ func (c *Client) Stop() {
 			log.Printf("TUN关闭失败: %v", err)
 		}
 		c.tun = nil
-		c.tunDev = nil
-	} else if c.tunDev != nil {
-		if err := c.tunDev.Close(); err != nil {
-			log.Printf("TUN关闭失败: %v", err)
-		}
-		c.tunDev = nil
 	}
 
 	log.Printf("客户端已停止")
