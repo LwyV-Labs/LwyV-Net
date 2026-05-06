@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-var defaultProxyDNS = []string{"223.6.6.6", "8.8.8.8", "1.1.1.1"}
+var defaultProxyDNS = []string{"8.8.8.8", "1.1.1.1"}
 
 type defaultRouteInfo struct {
 	Gateway string
