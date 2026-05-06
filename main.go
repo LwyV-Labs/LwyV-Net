@@ -58,33 +58,65 @@ func parseRunMode(args []string) string {
 }
 
 func monitorClientStats(client *vlan.Client, stop <-chan struct{}) {
+	time.Sleep(8 * time.Second)
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	fmt.Println("\n")
 	for {
 		select {
 		case <-stop:
+			fmt.Print("\r\033[2K")
 			return
+
 		case <-ticker.C:
 			stats := client.GetTrafficStats()
-			fmt.Printf("\r[Client] Up: %s/s  Down: %s/s  Used Up: %s  Used Down: %s", formatSpeed(stats.UploadBps), formatSpeed(stats.DownloadBps), formatBytes(stats.UploadBytes), formatBytes(stats.DownloadBytes))
+
+			up := formatSpeed(stats.UploadBps) + "/s"
+			down := formatSpeed(stats.DownloadBps) + "/s"
+			usedUp := formatBytes(stats.UploadBytes)
+			usedDown := formatBytes(stats.DownloadBytes)
+
+			fmt.Printf(
+				"\r\033[2K[Client] Up: %-12s Down: %-12s Used Up: %-12s Used Down: %-12s",
+				up,
+				down,
+				usedUp,
+				usedDown,
+			)
 		}
 	}
 }
 
 func monitorServerStats(server *vlan.Server, stop <-chan struct{}) {
+	time.Sleep(5 * time.Second)
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+
 	for {
 		select {
 		case <-stop:
 			return
+
 		case <-ticker.C:
 			peers := server.ListPeerTraffic()
-			fmt.Print("\033[H\033[2J")
+
+			fmt.Print("\033[2J\033[H")
 			fmt.Printf("[Server] Clients: %d\n", len(peers))
+
 			for i, p := range peers {
-				fmt.Printf("%d) device=%s ip=%s remote=%s\n", i+1, p.DeviceID, p.VirtualIP, p.RemoteAddr)
-				fmt.Printf("   Up: %s/s  Down: %s/s  UsedUp: %s  UsedDown: %s\n", formatSpeed(p.UploadBps), formatSpeed(p.DownloadBps), formatBytes(p.UploadBytes), formatBytes(p.DownloadBytes))
+				fmt.Printf("%d) device=%-18s ip=%-15s remote=%-22s\n",
+					i+1,
+					p.DeviceID,
+					p.VirtualIP,
+					p.RemoteAddr,
+				)
+
+				fmt.Printf("   Up: %-12s Down: %-12s UsedUp: %-12s UsedDown: %-12s\n",
+					formatSpeed(p.UploadBps)+"/s",
+					formatSpeed(p.DownloadBps)+"/s",
+					formatBytes(p.UploadBytes),
+					formatBytes(p.DownloadBytes),
+				)
 			}
 		}
 	}

@@ -97,7 +97,7 @@ func (c *Client) runSession(conn net.Conn) {
 		_ = conn.Close()
 		return
 	}
-	log.Printf("虚拟地址初始化完成，进入收发循环")
+	log.Printf("✅ 虚拟地址配置成功")
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
