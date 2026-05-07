@@ -12,6 +12,7 @@ import (
 	"github.com/LwyV-Labs/LwyV-Net/secure"
 	"github.com/LwyV-Labs/LwyV-Net/tunSetup"
 	"github.com/LwyV-Labs/LwyV-Net/vdhcp"
+	"golang.org/x/net/ipv4"
 )
 
 type ClientPeer struct {
@@ -334,14 +335,20 @@ func (s *Server) handleVDHCP(peer *ClientPeer, pkt []byte) {
 
 func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {
 	peer.stats.addDownload(len(pkt))
-	heardInfo, err := headerParsing(pkt)
+	// 直接解析二进制IP包，得到IP包头所有信息
+	ipHdr, err := ipv4.ParseHeader(pkt)
+
 	// 基本校验：源地址必须等于该 peer 分配到的虚拟地址，防止伪造。
-	if err != nil || peer.virtualIP == "" || heardInfo.SrcIP != peer.virtualIP || heardInfo.IsBroadcast {
+	if err != nil || peer.virtualIP == "" ||
+		ipHdr.Src.String() != peer.virtualIP ||
+		IsBroadcast(ipHdr.Dst) ||
+		IsMulticast(ipHdr.Src) ||
+		IsSubnetBroadcast(ipHdr.Dst, conf.Common.Gateway, conf.Common.SubnetMask) {
 		return
 	}
 
 	s.clientTable.RLock()
-	targetPeer, exists := s.clientTable.m[heardInfo.DstIP]
+	targetPeer, exists := s.clientTable.m[ipHdr.Dst.String()]
 	s.clientTable.RUnlock()
 	// 如果存在就转发
 	if exists {
@@ -369,12 +376,12 @@ func (s *Server) enqueuePeerPacket(peer *ClientPeer, pkt []byte) error {
 func (s *Server) tunToClients() {
 	// 从服务端网关 TUN 读到的数据，按目标 IP 发回对应客户端。
 	for pkt := range s.tun.ReadChan() {
-		heardInfo, err := headerParsing(pkt)
+		ipHdr, err := ipv4.ParseHeader(pkt)
 		if err != nil {
 			continue
 		}
 		s.clientTable.RLock()
-		targetPeer, exists := s.clientTable.m[heardInfo.DstIP]
+		targetPeer, exists := s.clientTable.m[ipHdr.Dst.String()]
 		s.clientTable.RUnlock()
 		if !exists {
 			continue
