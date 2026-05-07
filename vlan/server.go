@@ -63,8 +63,8 @@ const (
 	serverPeerSendQueueSize = 16 * 1024
 )
 
-func NewServer(conf config.Config) *Server {
-	conf = conf
+func NewServer(confs config.Config) *Server {
+	conf = confs
 	return &Server{clientTable: &KcpClient{m: make(map[string]*ClientPeer)}}
 }
 
