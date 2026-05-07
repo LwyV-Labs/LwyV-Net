@@ -342,7 +342,7 @@ func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {
 	if err != nil || peer.virtualIP == "" ||
 		ipHdr.Src.String() != peer.virtualIP ||
 		IsBroadcast(ipHdr.Dst) ||
-		IsMulticast(ipHdr.Src) ||
+		IsMulticast(ipHdr.Dst) ||
 		IsSubnetBroadcast(ipHdr.Dst, conf.Common.Gateway, conf.Common.SubnetMask) {
 		return
 	}
