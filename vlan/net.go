@@ -64,7 +64,7 @@ func isBroadcastIP(ip []byte) bool {
 		return true
 	}
 	// 子网定向广播（例如 192.168.1.255）
-	if isSubnetBroadcast(ip, Conf.Common.Gateway, Conf.Common.SubnetMask) {
+	if isSubnetBroadcast(ip, conf.Common.Gateway, conf.Common.SubnetMask) {
 		return true
 	}
 	// 224.0.0.0 ~ 239.255.255.255：组播地址，按广播型流量处理。
@@ -191,5 +191,5 @@ func writeAll(conn net.Conn, buf []byte) error {
 
 func maxFramePayload() int {
 	// 为加密头/控制字段预留额外空间，避免边界溢出。
-	return Conf.Common.MTU + 256
+	return conf.Common.MTU + 256
 }

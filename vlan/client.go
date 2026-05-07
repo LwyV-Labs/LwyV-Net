@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/LwyV-Labs/LwyV-Net/config"
 	"github.com/LwyV-Labs/LwyV-Net/kit"
 	"github.com/LwyV-Labs/LwyV-Net/secure"
 	"github.com/LwyV-Labs/LwyV-Net/setup"
@@ -28,31 +29,34 @@ type Client struct {
 	tun  *TUNTunnel
 }
 
-func NewClient() *Client {
+var conf config.Config
+
+func NewClient(confs config.Config) *Client {
+	conf = confs
 	return &Client{}
 }
 
 func (c *Client) Start() {
 	// 1) 创建 TUN 网卡；2) 放行本机策略；3) 启动收发循环。
-	dev, err := setup.CreateTun(Conf.Client.IfName, Conf.Common.MTU)
+	dev, err := setup.CreateTun(conf.Client.IfName, conf.Common.MTU)
 	if err != nil {
 		log.Fatalf("创建虚拟网卡失败: %v", err)
 	}
-	c.tun = NewTUNTunnel(dev, Conf.Common.MTU)
+	c.tun = NewTUNTunnel(dev, conf.Common.MTU)
 
-	if err := setup.AllowTunTraffic(Conf.Client.IfName); err != nil {
+	if err := setup.AllowTunTraffic(conf.Client.IfName); err != nil {
 		log.Fatalf("配置TUN策略失败: %v", err)
 	}
 
 	for !c.stop.Load() {
-		conn, err := net.Dial("tcp", Conf.Client.ServerIP)
+		conn, err := net.Dial("tcp", conf.Client.ServerIP)
 		if err != nil {
 			log.Printf("连接服务端失败: %v，1秒后重试", err)
 			time.Sleep(time.Second)
 			continue
 		}
 		c.conn = conn
-		log.Printf("已连接服务端: %s", Conf.Client.ServerIP)
+		log.Printf("已连接服务端: %s", conf.Client.ServerIP)
 		c.runSession(conn)
 		time.Sleep(time.Second)
 	}
@@ -115,12 +119,12 @@ func (c *Client) initAddress(conn net.Conn, sessionMgr *secure.SessionManager) e
 		return err
 	}
 	log.Printf("✅ 客户端已获取 VDHCP 虚拟地址: ip=%s mask=%s", dhcpIP, dhcpMask)
-	if err = setup.ConfigureTunAddress(Conf.Client.IfName, dhcpIP, dhcpMask); err != nil {
+	if err = setup.ConfigureTunAddress(conf.Client.IfName, dhcpIP, dhcpMask); err != nil {
 		return fmt.Errorf("配置虚拟网卡 IP 失败: %w", err)
 	}
-	if Conf.Common.Proxy {
+	if conf.Common.Proxy {
 		// 代理模式：把默认流量经虚拟网卡导向服务端网关。
-		if err = setup.SetupClientProxyRouting(Conf.Client.ServerIP, Conf.Client.IfName, Conf.Common.Gateway); err != nil {
+		if err = setup.SetupClientProxyRouting(conf.Client.ServerIP, conf.Client.IfName, conf.Common.Gateway); err != nil {
 			return fmt.Errorf("客户端代理路由初始化失败: %w", err)
 		}
 	}
@@ -213,10 +217,10 @@ func (c *Client) connToTun(conn net.Conn, sessionMgr *secure.SessionManager) {
 
 func (c *Client) performHandshake(conn net.Conn, sessionMgr *secure.SessionManager) error {
 	// 客户端作为发起方（Initiator）完成一次 Noise 握手。
-	if len(Conf.Common.Identity.Private) == 0 {
+	if len(conf.Common.Identity.Private) == 0 {
 		return fmt.Errorf("common.privateKey is required")
 	}
-	hs := secure.NewHandshaker(Conf.Common.Identity, Conf.Common.PeerStatic)
+	hs := secure.NewHandshaker(conf.Common.Identity, conf.Common.PeerStatic)
 	keyID := c.keyID.Add(1)
 	log.Printf("开始认证握手: keyID=%d", keyID)
 	session, err := hs.InitiatorHandshake(

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/LwyV-Labs/LwyV-Net/config"
 	"github.com/LwyV-Labs/LwyV-Net/secure"
 	"github.com/LwyV-Labs/LwyV-Net/setup"
 	"github.com/LwyV-Labs/LwyV-Net/vdhcp"
@@ -62,7 +63,8 @@ const (
 	serverPeerSendQueueSize = 16 * 1024
 )
 
-func NewServer() *Server {
+func NewServer(conf config.Config) *Server {
+	conf = conf
 	return &Server{clientTable: &KcpClient{m: make(map[string]*ClientPeer)}}
 }
 
@@ -74,19 +76,19 @@ func (s *Server) Start() {
 	if err := s.initVDHCP(); err != nil {
 		log.Fatalf("初始化虚拟DHCP失败: %v", err)
 	}
-	log.Printf("✅ 虚拟DHCP已启用: %s - %s", Conf.VDHCP.StartIP, Conf.VDHCP.EndIP)
+	log.Printf("✅ 虚拟DHCP已启用: %s - %s", conf.VDHCP.StartIP, conf.VDHCP.EndIP)
 	if err := s.initGateway(); err != nil {
 		log.Fatalf("初始化服务端网关失败: %v", err)
 	}
-	log.Printf("✅ 服务端网关已启用: if=%s gw=%s/%s", Conf.Server.IfName, Conf.Common.Gateway, Conf.Common.SubnetMask)
+	log.Printf("✅ 服务端网关已启用: if=%s gw=%s/%s", conf.Server.IfName, conf.Common.Gateway, conf.Common.SubnetMask)
 
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", Conf.Server.Port))
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", conf.Server.Port))
 	if err != nil {
 		log.Fatalf("服务端启动失败: %v", err)
 	}
 	s.listener = listener
 
-	log.Printf("✅ TCP 服务端启动成功，监听 :%d", Conf.Server.Port)
+	log.Printf("✅ TCP 服务端启动成功，监听 :%d", conf.Server.Port)
 	log.Println("📝 等待客户端连接并转发IP包...")
 
 	for !s.stop.Load() {
@@ -140,30 +142,30 @@ func (s *Server) Stop() {
 }
 
 func (s *Server) initVDHCP() error {
-	manager, err := vdhcp.NewManager(Conf.VDHCP.StartIP, Conf.VDHCP.EndIP)
+	manager, err := vdhcp.NewManager(conf.VDHCP.StartIP, conf.VDHCP.EndIP)
 	if err != nil {
 		return err
 	}
 	s.dhcp = manager
-	s.dhcpMask = Conf.Common.SubnetMask
+	s.dhcpMask = conf.Common.SubnetMask
 	return nil
 }
 
 func (s *Server) initGateway() error {
 	// 只有在 proxy=true 时才需要服务端扮演“虚拟网关”。
-	if !Conf.Common.Proxy {
+	if !conf.Common.Proxy {
 		return nil
 	}
-	dev, err := setup.CreateTun(Conf.Server.IfName, Conf.Common.MTU)
+	dev, err := setup.CreateTun(conf.Server.IfName, conf.Common.MTU)
 	if err != nil {
 		return fmt.Errorf("创建服务端TUN失败: %w", err)
 	}
-	s.tun = NewTUNTunnel(dev, Conf.Common.MTU)
+	s.tun = NewTUNTunnel(dev, conf.Common.MTU)
 
-	if err = setup.ConfigureTunAddress(Conf.Server.IfName, Conf.Common.Gateway, Conf.Common.SubnetMask); err != nil {
+	if err = setup.ConfigureTunAddress(conf.Server.IfName, conf.Common.Gateway, conf.Common.SubnetMask); err != nil {
 		return fmt.Errorf("配置服务端TUN地址失败: %w", err)
 	}
-	if err = setup.EnableServerGatewayNAT(Conf.Server.IfName, Conf.Common.Gateway, Conf.Common.SubnetMask, Conf.Server.EgressIf); err != nil {
+	if err = setup.EnableServerGatewayNAT(conf.Server.IfName, conf.Common.Gateway, conf.Common.SubnetMask, conf.Server.EgressIf); err != nil {
 		return fmt.Errorf("配置服务端NAT失败: %w", err)
 	}
 
@@ -254,10 +256,10 @@ func (s *Server) cleanupClientPeer(peer *ClientPeer) {
 
 func (s *Server) performHandshake(peer *ClientPeer, initMsg []byte) error {
 	// 服务端作为响应方（Responder）完成握手，并拿到对端公钥。
-	if len(Conf.Common.Identity.Private) == 0 {
+	if len(conf.Common.Identity.Private) == 0 {
 		return fmt.Errorf("common.privateKey is required")
 	}
-	hs := secure.NewHandshaker(Conf.Common.Identity, nil)
+	hs := secure.NewHandshaker(conf.Common.Identity, nil)
 	keyID := s.keyID.Add(1)
 	log.Printf("开始处理客户端认证: remote=%s localKeyID=%d", peer.conn.RemoteAddr(), keyID)
 	session, remotePub, err := hs.ResponderHandshake(
@@ -283,7 +285,7 @@ func (s *Server) performHandshake(peer *ClientPeer, initMsg []byte) error {
 		log.Printf("客户端认证失败: remote=%s localKeyID=%d err=%v", peer.conn.RemoteAddr(), keyID, err)
 		return err
 	}
-	if !isPeerStaticAllowed(remotePub) {
+	if !config.IsPeerStaticAllowed(remotePub) {
 		return fmt.Errorf("peer public key not allowed")
 	}
 	peer.peerPublicKey = base64.StdEncoding.EncodeToString(remotePub)
@@ -335,7 +337,7 @@ func (s *Server) handleVDHCP(peer *ClientPeer, pkt []byte) {
 		peer.mu.Unlock()
 		return
 	}
-	offer, err := vdhcp.EncodeOffer(ip, s.dhcpMask, Conf.Common.Gateway)
+	offer, err := vdhcp.EncodeOffer(ip, s.dhcpMask, conf.Common.Gateway)
 	if err != nil {
 		return
 	}

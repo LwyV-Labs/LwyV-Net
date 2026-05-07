@@ -3,7 +3,6 @@ module github.com/LwyV-Labs/LwyV-Net
 go 1.26
 
 require (
-	github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203
 	golang.org/x/crypto v0.48.0
 	golang.org/x/sys v0.42.0
 	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb

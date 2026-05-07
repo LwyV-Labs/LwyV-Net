@@ -1,4 +1,4 @@
-package vlan
+package config
 
 import (
 	"crypto/ecdh"
@@ -55,21 +55,15 @@ type VDHCPConfig struct {
 	EndIP   string `yaml:"endIP"`
 }
 
-var Conf Config
-var allowedPeerStaticSet map[string]struct{}
-
-type RunMode string
-
-const (
-	RunModeClient RunMode = "client"
-	RunModeServer RunMode = "server"
-)
-
 const path = "config.yaml"
 
-// init 自动加载配置文件
-func init() {
+var allowedPeerStaticSet map[string]struct{}
+
+// ConfigInit 自动加载配置文件
+func ConfigInit() Config {
 	allowedPeerStaticSet = make(map[string]struct{})
+	Conf := Config{}
+
 	// 第一步：把配置文件完整读入内存。
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -100,30 +94,6 @@ func init() {
 	}
 
 	// 第三步：做字段合法性校验 + 衍生字段填充（例如密钥解析）。
-	validateConfig()
-}
-
-func Genkey() {
-	// 用法：
-	//   ./程序名 genkey
-	//     生成本机 privateKey，写入 config.yaml，并打印本机 publicKey。
-	peerPublicKey := ""
-	if len(os.Args) >= 3 {
-		peerPublicKey = os.Args[2]
-	}
-	publicKey, err := GenerateAndWriteKeys(path, peerPublicKey)
-	if err != nil {
-		log.Fatalf("生成并写入密钥失败: %v", err)
-	}
-	fmt.Println("✅ 已生成新的本机身份密钥，并写入", path)
-	fmt.Println("本机 publicKey:", publicKey)
-	fmt.Println("请把上面的 publicKey 填到对端 config.yaml 的 common.peerPublicKeys[0]")
-	if peerPublicKey != "" {
-		fmt.Println("✅ 已同时写入 common.peerPublicKeys[0]")
-	}
-}
-
-func validateConfig() {
 	// privateKey / peerPublicKey 在 YAML 中是字符串，
 	// 这里会解析成后续握手加密真正要用的二进制对象。
 	if Conf.Common.PrivateKey != "" {
@@ -155,6 +125,15 @@ func validateConfig() {
 	if _, err := kit.MaskToPrefix(Conf.Common.SubnetMask); err != nil {
 		log.Fatalf("非法子网掩码: %s, 错误: %v", Conf.Common.SubnetMask, err)
 	}
+	return Conf
+}
+
+func IsPeerStaticAllowed(remotePub []byte) bool {
+	if len(allowedPeerStaticSet) == 0 {
+		return true
+	}
+	_, ok := allowedPeerStaticSet[string(remotePub)]
+	return ok
 }
 
 // GenerateAndWriteKeys 生成一组 Noise IK / ECDH 长期身份密钥，并写入配置文件。
@@ -229,12 +208,4 @@ func writeKeysToConfig(path string, privateKey string, peerPublicKey string) err
 		return fmt.Errorf("写入配置文件失败: %w", err)
 	}
 	return nil
-}
-
-func isPeerStaticAllowed(remotePub []byte) bool {
-	if len(allowedPeerStaticSet) == 0 {
-		return true
-	}
-	_, ok := allowedPeerStaticSet[string(remotePub)]
-	return ok
 }

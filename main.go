@@ -8,21 +8,27 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/LwyV-Labs/LwyV-Net/config"
+
 	"github.com/LwyV-Labs/LwyV-Net/vlan"
+)
+
+type RunMode string
+
+const (
+	RunModeClient RunMode = "client"
+	RunModeServer RunMode = "server"
 )
 
 func main() {
 	mode := parseRunMode(os.Args)
-
+	confs := config.ConfigInit()
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 
 	switch mode {
-	case "genkey":
-		vlan.Genkey()
-		return
-	case string(vlan.RunModeServer):
-		server := vlan.NewServer()
+	case string(RunModeServer):
+		server := vlan.NewServer(confs)
 		go server.Start()
 		stopStats := make(chan struct{})
 		go monitorServerStats(server, stopStats)
@@ -30,8 +36,8 @@ func main() {
 		close(stopStats)
 		server.Stop()
 		return
-	case string(vlan.RunModeClient):
-		client := vlan.NewClient()
+	case string(RunModeClient):
+		client := vlan.NewClient(confs)
 		go client.Start()
 		stopStats := make(chan struct{})
 		go monitorClientStats(client, stopStats)
@@ -46,10 +52,10 @@ func main() {
 
 func parseRunMode(args []string) string {
 	if len(args) < 2 {
-		return string(vlan.RunModeClient)
+		return string(RunModeClient)
 	}
 	switch args[1] {
-	case "genkey", string(vlan.RunModeServer), string(vlan.RunModeClient):
+	case "genkey", string(RunModeServer), string(RunModeClient):
 		return args[1]
 	default:
 		log.Fatalf("%s is not a valid runType", args[1])
