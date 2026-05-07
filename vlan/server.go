@@ -170,7 +170,7 @@ func (s *Server) handleClient(conn net.Conn) {
 	log.Printf("客户端认证成功 remote=%s device=%s", conn.RemoteAddr(), peer.deviceID)
 
 	for {
-		frame, err := readFrame(conn, maxFramePayload(), defaultReadFrameTimeout)
+		frame, err := readFrame(conn)
 		if err != nil {
 			return
 		}
@@ -248,7 +248,7 @@ func (s *Server) performHandshake(peer *ClientPeer, initMsg []byte) error {
 				initMsg = nil
 				return msg, nil
 			}
-			frame, err := readFrame(peer.conn, maxFramePayload(), defaultReadFrameTimeout)
+			frame, err := readFrame(peer.conn)
 			if err != nil {
 				return nil, err
 			}

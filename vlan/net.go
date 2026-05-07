@@ -74,21 +74,21 @@ type TunnelFrame struct {
 }
 
 const defaultReadFrameTimeout = 16 * time.Second
+const maxPayloadSize = 4096
 
 // readPacket 读包
-func readFrame(conn net.Conn, maxPayloadSize int, timeout time.Duration) (*TunnelFrame, error) {
+func readFrame(conn net.Conn) (*TunnelFrame, error) {
 	// 协议格式：
 	// [4字节长度][1字节Type][N字节Payload]
-	if timeout > 0 {
-		_ = conn.SetReadDeadline(time.Now().Add(timeout))
-	}
+	_ = conn.SetReadDeadline(time.Now().Add(defaultReadFrameTimeout))
+
 	lenBuf := make([]byte, 4)
 	if _, err := io.ReadFull(conn, lenBuf); err != nil {
 		return nil, err
 	}
 
 	frameLen := binary.BigEndian.Uint32(lenBuf)
-	if frameLen < 1 || frameLen > uint32(maxPayloadSize+1) {
+	if frameLen < 1 || frameLen > uint32(maxPayloadSize) {
 		return nil, fmt.Errorf("invalid frame len: %d", frameLen)
 	}
 
@@ -139,9 +139,4 @@ func writeAll(conn net.Conn, buf []byte) error {
 		buf = buf[n:]
 	}
 	return nil
-}
-
-func maxFramePayload() int {
-	// 为加密头/控制字段预留额外空间，避免边界溢出。
-	return conf.Common.MTU + 256
 }

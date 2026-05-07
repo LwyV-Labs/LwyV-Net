@@ -17,9 +17,7 @@ import (
 )
 
 const (
-	MaxHandshakeMsgSize = 1024
-	RekeyInterval       = 120 * time.Second
-
+	RekeyInterval           = 120 * time.Second
 	replayWindowSize uint64 = 4096
 )
 

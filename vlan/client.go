@@ -139,7 +139,7 @@ func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) 
 		log.Printf("发送DHCP Discover失败: %v", err)
 		return "", "", err
 	}
-	frame, err := readFrame(conn, maxFramePayload(), defaultReadFrameTimeout)
+	frame, err := readFrame(conn)
 	if err != nil {
 		log.Printf("读取DHCP Offer失败: err=%v", err)
 		return "", "", fmt.Errorf("读取DHCP OFFER失败: %w", err)
@@ -187,7 +187,7 @@ func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr 
 
 func (c *Client) connToTun(conn net.Conn, sessionMgr *secure.SessionManager) {
 	for {
-		frame, err := readFrame(conn, maxFramePayload(), defaultReadFrameTimeout)
+		frame, err := readFrame(conn)
 		if err != nil {
 			return
 		}
@@ -224,7 +224,7 @@ func (c *Client) performHandshake(conn net.Conn, sessionMgr *secure.SessionManag
 	session, err := hs.InitiatorHandshake(
 		func(msg []byte) error { return writeFrame(conn, PacketTypeHandshakeInit, msg) },
 		func() ([]byte, error) {
-			frame, err := readFrame(conn, secure.MaxHandshakeMsgSize, defaultReadFrameTimeout)
+			frame, err := readFrame(conn)
 			if err != nil {
 				return nil, err
 			}
