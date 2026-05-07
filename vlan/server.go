@@ -156,12 +156,10 @@ func (s *Server) initGateway() error {
 	if !conf.Common.Proxy {
 		return nil
 	}
-	dev, err := tunSetup.CreateTun(conf.Server.IfName, conf.Common.MTU)
-	if err != nil {
+	var err error
+	if s.tun, err = tunSetup.NewTUNTunnel(conf.Server.IfName, conf.Common.MTU); err != nil {
 		return fmt.Errorf("创建服务端TUN失败: %w", err)
 	}
-	s.tun = tunSetup.NewTUNTunnel(dev, conf.Common.MTU)
-
 	if err = tunSetup.ConfigureTunAddress(conf.Server.IfName, conf.Common.Gateway, conf.Common.SubnetMask); err != nil {
 		return fmt.Errorf("配置服务端TUN地址失败: %w", err)
 	}

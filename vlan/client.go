@@ -38,13 +38,11 @@ func NewClient(confs config.Config) *Client {
 
 func (c *Client) Start() {
 	// 1) 创建 TUN 网卡；2) 放行本机策略；3) 启动收发循环。
-	dev, err := tunSetup.CreateTun(conf.Client.IfName, conf.Common.MTU)
-	if err != nil {
+	var err error
+	if c.tun, err = tunSetup.NewTUNTunnel(conf.Server.IfName, conf.Common.MTU); err != nil {
 		log.Fatalf("创建虚拟网卡失败: %v", err)
 	}
-	c.tun = tunSetup.NewTUNTunnel(dev, conf.Common.MTU)
-
-	if err := tunSetup.AllowTunTraffic(conf.Client.IfName); err != nil {
+	if err = tunSetup.AllowTunTraffic(conf.Client.IfName); err != nil {
 		log.Fatalf("配置TUN策略失败: %v", err)
 	}
 

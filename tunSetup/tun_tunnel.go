@@ -33,7 +33,12 @@ type TUNTunnel struct {
 	closeErr  error
 }
 
-func NewTUNTunnel(dev tun.Device, mtu int) *TUNTunnel {
+func NewTUNTunnel(IfName string, mtu int) (*TUNTunnel, error) {
+	dev, err := CreateTun(IfName, mtu)
+	if err != nil {
+		return nil, err
+	}
+
 	batchSize := dev.BatchSize()
 	if batchSize < 1 {
 		batchSize = 1
@@ -57,7 +62,7 @@ func NewTUNTunnel(dev tun.Device, mtu int) *TUNTunnel {
 	go t.readLoop()
 	go t.writeLoop()
 
-	return t
+	return t, nil
 }
 
 func (t *TUNTunnel) ReadChan() <-chan []byte {
