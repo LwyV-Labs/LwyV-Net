@@ -69,30 +69,42 @@ func NewServer(confs config.Config) *Server {
 }
 
 func (s *Server) Start() {
-	// 启动顺序：
-	// 1) 初始化地址池（vDHCP）
-	// 2) 如开启代理则初始化服务端网关/NAT
-	// 3) 启动 KCP 监听
-	if err := s.initVDHCP(); err != nil {
+	// 1 初始化地址池（vDHCP）
+	manager, err := vdhcp.NewManager(conf.VDHCP.StartIP, conf.VDHCP.EndIP)
+	if err != nil {
 		log.Fatalf("初始化虚拟DHCP失败: %v", err)
 	}
+	s.dhcp = manager
+	s.dhcpMask = conf.Common.SubnetMask
 	log.Printf("✅ 虚拟DHCP已启用: %s - %s", conf.VDHCP.StartIP, conf.VDHCP.EndIP)
-	if err := s.initGateway(); err != nil {
-		log.Fatalf("初始化服务端网关失败: %v", err)
+
+	// 2 如开启代理则初始化服务端网关/NAT
+	if conf.Common.Proxy {
+		if s.tun, err = tunSetup.NewTUNTunnel(conf.Server.IfName, conf.Common.MTU); err != nil {
+			log.Fatalf("创建服务端TUN失败: %V", err)
+		}
+		if err = tunSetup.ConfigureTunAddress(conf.Server.IfName, conf.Common.Gateway, conf.Common.SubnetMask); err != nil {
+			log.Fatalf("配置服务端TUN地址失败: %V", err)
+		}
+		if err = tunSetup.EnableServerGatewayNAT(conf.Server.IfName, conf.Common.Gateway, conf.Common.SubnetMask, conf.Server.EgressIf); err != nil {
+			log.Fatalf("配置服务端NAT失败: %V", err)
+		}
 	}
+	// 启动下行分发：服务端 TUN -> 对应客户端。
+	go s.tunToClients()
 	log.Printf("✅ 服务端网关已启用: if=%s gw=%s/%s", conf.Server.IfName, conf.Common.Gateway, conf.Common.SubnetMask)
 
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", conf.Server.Port))
+	// 3) 启动 KCP 监听
+	s.listener, err = net.Listen("tcp", fmt.Sprintf(":%d", conf.Server.Port))
 	if err != nil {
 		log.Fatalf("服务端启动失败: %v", err)
 	}
-	s.listener = listener
 
 	log.Printf("✅ TCP 服务端启动成功，监听 :%d", conf.Server.Port)
 	log.Println("📝 等待客户端连接并转发IP包...")
 
 	for !s.stop.Load() {
-		conn, err := listener.Accept()
+		conn, err := s.listener.Accept()
 		if err != nil {
 			if s.stop.Load() {
 				return
@@ -105,9 +117,7 @@ func (s *Server) Start() {
 }
 
 func (s *Server) Stop() {
-
 	s.stop.Store(true)
-
 	tunSetup.DisableServerGatewayNAT()
 
 	// 关闭监听器，让 Accept() 退出
@@ -139,37 +149,6 @@ func (s *Server) Stop() {
 	}
 
 	log.Printf("服务端已停止")
-}
-
-func (s *Server) initVDHCP() error {
-	manager, err := vdhcp.NewManager(conf.VDHCP.StartIP, conf.VDHCP.EndIP)
-	if err != nil {
-		return err
-	}
-	s.dhcp = manager
-	s.dhcpMask = conf.Common.SubnetMask
-	return nil
-}
-
-func (s *Server) initGateway() error {
-	// 只有在 proxy=true 时才需要服务端扮演“虚拟网关”。
-	if !conf.Common.Proxy {
-		return nil
-	}
-	var err error
-	if s.tun, err = tunSetup.NewTUNTunnel(conf.Server.IfName, conf.Common.MTU); err != nil {
-		return fmt.Errorf("创建服务端TUN失败: %w", err)
-	}
-	if err = tunSetup.ConfigureTunAddress(conf.Server.IfName, conf.Common.Gateway, conf.Common.SubnetMask); err != nil {
-		return fmt.Errorf("配置服务端TUN地址失败: %w", err)
-	}
-	if err = tunSetup.EnableServerGatewayNAT(conf.Server.IfName, conf.Common.Gateway, conf.Common.SubnetMask, conf.Server.EgressIf); err != nil {
-		return fmt.Errorf("配置服务端NAT失败: %w", err)
-	}
-
-	// 启动下行分发：服务端 TUN -> 对应客户端。
-	go s.tunToClients()
-	return nil
 }
 
 func (s *Server) handleClient(conn net.Conn) {
