@@ -59,8 +59,8 @@ const path = "config.yaml"
 
 var allowedPeerStaticSet map[string]struct{}
 
-// ConfigInit 自动加载配置文件
-func ConfigInit() Config {
+// LoadConfig 自动加载配置文件
+func LoadConfig() Config {
 	allowedPeerStaticSet = make(map[string]struct{})
 	Conf := Config{}
 

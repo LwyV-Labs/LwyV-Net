@@ -22,7 +22,7 @@ const (
 
 func main() {
 	mode := parseRunMode(os.Args)
-	confs := config.ConfigInit()
+	confs := config.LoadConfig()
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 
