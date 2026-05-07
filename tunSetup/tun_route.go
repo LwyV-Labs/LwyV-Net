@@ -1,4 +1,4 @@
-package setup
+package tunSetup
 
 import (
 	"fmt"
@@ -188,4 +188,17 @@ func ResolveServerIPv4(serverAddr string) (string, error) {
 	}
 
 	return "", fmt.Errorf("域名 %s 没有可用IPv4地址", host)
+}
+
+func MaskToPrefix(mask string) (int, error) {
+	// 把点分十进制掩码（255.255.255.0）转成前缀长度（24）。
+	ip := net.ParseIP(mask).To4()
+	if ip == nil {
+		return 0, fmt.Errorf("非法子网掩码: %s", mask)
+	}
+	ones, bits := net.IPMask(ip).Size()
+	if bits != 32 {
+		return 0, fmt.Errorf("非法子网掩码: %s", mask)
+	}
+	return ones, nil
 }

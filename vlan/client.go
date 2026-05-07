@@ -3,14 +3,14 @@ package vlan
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"sync/atomic"
 	"time"
 
 	"github.com/LwyV-Labs/LwyV-Net/config"
-	"github.com/LwyV-Labs/LwyV-Net/kit"
 	"github.com/LwyV-Labs/LwyV-Net/secure"
-	"github.com/LwyV-Labs/LwyV-Net/setup"
+	"github.com/LwyV-Labs/LwyV-Net/tunSetup"
 	"github.com/LwyV-Labs/LwyV-Net/vdhcp"
 )
 
@@ -26,7 +26,7 @@ type Client struct {
 
 	stop atomic.Bool
 	conn net.Conn
-	tun  *TUNTunnel
+	tun  *tunSetup.TUNTunnel
 }
 
 var conf config.Config
@@ -38,13 +38,13 @@ func NewClient(confs config.Config) *Client {
 
 func (c *Client) Start() {
 	// 1) 创建 TUN 网卡；2) 放行本机策略；3) 启动收发循环。
-	dev, err := setup.CreateTun(conf.Client.IfName, conf.Common.MTU)
+	dev, err := tunSetup.CreateTun(conf.Client.IfName, conf.Common.MTU)
 	if err != nil {
 		log.Fatalf("创建虚拟网卡失败: %v", err)
 	}
-	c.tun = NewTUNTunnel(dev, conf.Common.MTU)
+	c.tun = tunSetup.NewTUNTunnel(dev, conf.Common.MTU)
 
-	if err := setup.AllowTunTraffic(conf.Client.IfName); err != nil {
+	if err := tunSetup.AllowTunTraffic(conf.Client.IfName); err != nil {
 		log.Fatalf("配置TUN策略失败: %v", err)
 	}
 
@@ -65,8 +65,8 @@ func (c *Client) Start() {
 func (c *Client) Stop() {
 	c.stop.Store(true)
 
-	setup.CleanupClientProxyRouting()
-	setup.CleanupTunTraffic()
+	tunSetup.CleanupClientProxyRouting()
+	tunSetup.CleanupTunTraffic()
 
 	// 关闭客户端连接
 	if c.conn != nil {
@@ -119,12 +119,12 @@ func (c *Client) initAddress(conn net.Conn, sessionMgr *secure.SessionManager) e
 		return err
 	}
 	log.Printf("✅ 客户端已获取 VDHCP 虚拟地址: ip=%s mask=%s", dhcpIP, dhcpMask)
-	if err = setup.ConfigureTunAddress(conf.Client.IfName, dhcpIP, dhcpMask); err != nil {
+	if err = tunSetup.ConfigureTunAddress(conf.Client.IfName, dhcpIP, dhcpMask); err != nil {
 		return fmt.Errorf("配置虚拟网卡 IP 失败: %w", err)
 	}
 	if conf.Common.Proxy {
 		// 代理模式：把默认流量经虚拟网卡导向服务端网关。
-		if err = setup.SetupClientProxyRouting(conf.Client.ServerIP, conf.Client.IfName, conf.Common.Gateway); err != nil {
+		if err = tunSetup.SetupClientProxyRouting(conf.Client.ServerIP, conf.Client.IfName, conf.Common.Gateway); err != nil {
 			return fmt.Errorf("客户端代理路由初始化失败: %w", err)
 		}
 	}
@@ -163,7 +163,7 @@ func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) 
 }
 
 func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr *secure.SessionManager) {
-	ticker := time.NewTicker(kit.RandomInterval(heartbeatInterval, heartbeatFluctuate))
+	ticker := time.NewTicker(RandomInterval(heartbeatInterval, heartbeatFluctuate))
 	defer ticker.Stop()
 	for {
 		select {
@@ -248,4 +248,11 @@ func (c *Client) performHandshake(conn net.Conn, sessionMgr *secure.SessionManag
 
 func (c *Client) GetTrafficStats() TrafficStats {
 	return c.stats.snapshot()
+}
+
+// RandomInterval 生成：基础时间 ± 浮动范围 的随机间隔
+func RandomInterval(base, fluctuate time.Duration) time.Duration {
+	// 生成 [-fluctuate, fluctuate] 之间的随机 Duration
+	offset := time.Duration(rand.Int63n(2*int64(fluctuate)+1)) - fluctuate
+	return base + offset
 }

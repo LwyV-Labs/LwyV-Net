@@ -10,7 +10,7 @@ import (
 
 	"github.com/LwyV-Labs/LwyV-Net/config"
 	"github.com/LwyV-Labs/LwyV-Net/secure"
-	"github.com/LwyV-Labs/LwyV-Net/setup"
+	"github.com/LwyV-Labs/LwyV-Net/tunSetup"
 	"github.com/LwyV-Labs/LwyV-Net/vdhcp"
 )
 
@@ -48,7 +48,7 @@ type Server struct {
 
 	listener net.Listener
 
-	tun *TUNTunnel
+	tun *tunSetup.TUNTunnel
 
 	dhcp     *vdhcp.Manager
 	dhcpMask string
@@ -108,7 +108,7 @@ func (s *Server) Stop() {
 
 	s.stop.Store(true)
 
-	setup.DisableServerGatewayNAT()
+	tunSetup.DisableServerGatewayNAT()
 
 	// 关闭监听器，让 Accept() 退出
 	if s.listener != nil {
@@ -156,16 +156,16 @@ func (s *Server) initGateway() error {
 	if !conf.Common.Proxy {
 		return nil
 	}
-	dev, err := setup.CreateTun(conf.Server.IfName, conf.Common.MTU)
+	dev, err := tunSetup.CreateTun(conf.Server.IfName, conf.Common.MTU)
 	if err != nil {
 		return fmt.Errorf("创建服务端TUN失败: %w", err)
 	}
-	s.tun = NewTUNTunnel(dev, conf.Common.MTU)
+	s.tun = tunSetup.NewTUNTunnel(dev, conf.Common.MTU)
 
-	if err = setup.ConfigureTunAddress(conf.Server.IfName, conf.Common.Gateway, conf.Common.SubnetMask); err != nil {
+	if err = tunSetup.ConfigureTunAddress(conf.Server.IfName, conf.Common.Gateway, conf.Common.SubnetMask); err != nil {
 		return fmt.Errorf("配置服务端TUN地址失败: %w", err)
 	}
-	if err = setup.EnableServerGatewayNAT(conf.Server.IfName, conf.Common.Gateway, conf.Common.SubnetMask, conf.Server.EgressIf); err != nil {
+	if err = tunSetup.EnableServerGatewayNAT(conf.Server.IfName, conf.Common.Gateway, conf.Common.SubnetMask, conf.Server.EgressIf); err != nil {
 		return fmt.Errorf("配置服务端NAT失败: %w", err)
 	}
 

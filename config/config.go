@@ -10,7 +10,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/LwyV-Labs/LwyV-Net/kit"
 	"github.com/LwyV-Labs/LwyV-Net/secure"
 
 	"gopkg.in/yaml.v3"
@@ -122,7 +121,7 @@ func LoadConfig() Config {
 	if net.ParseIP(Conf.Common.Gateway) == nil {
 		log.Fatalf("非法网关地址: %s", Conf.Common.Gateway)
 	}
-	if _, err := kit.MaskToPrefix(Conf.Common.SubnetMask); err != nil {
+	if _, err := MaskToPrefix(Conf.Common.SubnetMask); err != nil {
 		log.Fatalf("非法子网掩码: %s, 错误: %v", Conf.Common.SubnetMask, err)
 	}
 	return Conf
@@ -134,6 +133,19 @@ func IsPeerStaticAllowed(remotePub []byte) bool {
 	}
 	_, ok := allowedPeerStaticSet[string(remotePub)]
 	return ok
+}
+
+func MaskToPrefix(mask string) (int, error) {
+	// 把点分十进制掩码（255.255.255.0）转成前缀长度（24）。
+	ip := net.ParseIP(mask).To4()
+	if ip == nil {
+		return 0, fmt.Errorf("非法子网掩码: %s", mask)
+	}
+	ones, bits := net.IPMask(ip).Size()
+	if bits != 32 {
+		return 0, fmt.Errorf("非法子网掩码: %s", mask)
+	}
+	return ones, nil
 }
 
 // GenerateAndWriteKeys 生成一组 Noise IK / ECDH 长期身份密钥，并写入配置文件。

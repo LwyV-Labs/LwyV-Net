@@ -1,10 +1,9 @@
 //go:build linux
 
-package setup
+package tunSetup
 
 import (
 	"fmt"
-	"github.com/LwyV-Labs/LwyV-Net/kit"
 	"os"
 	"os/exec"
 	"strings"
@@ -39,7 +38,7 @@ func CreateTun(name string, mtu int) (tun.Device, error) {
 }
 
 func ConfigureTunAddress(ifName, ip, mask string) error {
-	prefix, err := kit.MaskToPrefix(mask)
+	prefix, err := MaskToPrefix(mask)
 	if err != nil {
 		return err
 	}

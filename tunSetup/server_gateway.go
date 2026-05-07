@@ -1,4 +1,4 @@
-package setup
+package tunSetup
 
 import (
 	"fmt"
@@ -7,8 +7,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-
-	"github.com/LwyV-Labs/LwyV-Net/kit"
 )
 
 type serverGatewayNATState struct {
@@ -32,7 +30,7 @@ func EnableServerGatewayNAT(ifName, gatewayIP, mask, egressIf string) error {
 		disableServerGatewayNATLocked()
 	}
 
-	prefix, err := kit.MaskToPrefix(mask)
+	prefix, err := MaskToPrefix(mask)
 	if err != nil {
 		return err
 	}

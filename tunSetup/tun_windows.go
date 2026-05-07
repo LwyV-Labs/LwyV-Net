@@ -1,6 +1,6 @@
 //go:build windows
 
-package setup
+package tunSetup
 
 import (
 	"fmt"

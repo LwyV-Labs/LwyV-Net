@@ -1,4 +1,4 @@
-package vlan
+package tunSetup
 
 import (
 	"errors"
