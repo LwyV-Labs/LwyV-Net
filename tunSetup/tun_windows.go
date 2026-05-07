@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"syscall"
 
 	"golang.zx2c4.com/wireguard/tun"
 )
@@ -15,16 +16,33 @@ const (
 	fwRuleOut = "VLAN_NET_ALLOW_ALL_OUT"
 )
 
+// CREATE_NO_WINDOW
+const createNoWindow = 0x08000000
+
+// hiddenCommand 用于隐藏 powershell / netsh / route 等子进程黑色控制台窗口
+func hiddenCommand(name string, args ...string) *exec.Cmd {
+	cmd := exec.Command(name, args...)
+
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: createNoWindow,
+	}
+
+	return cmd
+}
+
 func CreateTun(name string, mtu int) (tun.Device, error) {
 	return tun.CreateTUN(name, mtu)
 }
 
 func RunPowerShell(ps string) error {
-	cmd := exec.Command(
+	cmd := hiddenCommand(
 		"powershell.exe",
+		"-NoLogo",
 		"-NoProfile",
 		"-NonInteractive",
 		"-ExecutionPolicy", "Bypass",
+		"-WindowStyle", "Hidden",
 		"-Command",
 		ps,
 	)
@@ -37,11 +55,13 @@ func RunPowerShell(ps string) error {
 }
 
 func RunPowerShellOutput(ps string) (string, error) {
-	cmd := exec.Command(
+	cmd := hiddenCommand(
 		"powershell.exe",
+		"-NoLogo",
 		"-NoProfile",
 		"-NonInteractive",
 		"-ExecutionPolicy", "Bypass",
+		"-WindowStyle", "Hidden",
 		"-Command",
 		ps,
 	)
@@ -80,9 +100,18 @@ Get-NetFirewallRule -DisplayName %q -ErrorAction SilentlyContinue | Remove-NetFi
 }
 
 func ConfigureTunAddress(ifName, ip, mask string) error {
-	cmd := exec.Command("netsh", "interface", "ip", "set", "address",
-		ifName, "static", ip, mask)
-	return cmd.Run()
+	cmd := hiddenCommand(
+		"netsh.exe",
+		"interface", "ip", "set", "address",
+		ifName, "static", ip, mask,
+	)
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("配置TUN地址失败: %v, output: %s", err, string(out))
+	}
+
+	return nil
 }
 
 func AllowTunTraffic(ifName string) error {
@@ -107,15 +136,18 @@ func SetInterfaceDNS(ifName string, dns []string) error {
 	if len(dns) == 0 {
 		return nil
 	}
+
 	quoted := make([]string, 0, len(dns))
 	for _, d := range dns {
 		quoted = append(quoted, fmt.Sprintf("%q", d))
 	}
+
 	ps := fmt.Sprintf(`
 $alias = %q
 $servers = @(%s)
 Set-DnsClientServerAddress -InterfaceAlias $alias -ServerAddresses $servers -ErrorAction Stop
 `, ifName, strings.Join(quoted, ", "))
+
 	return RunPowerShell(ps)
 }
 
@@ -124,6 +156,7 @@ func ResetInterfaceDNS(ifName string) error {
 $alias = %q
 Set-DnsClientServerAddress -InterfaceAlias $alias -ResetServerAddresses -ErrorAction Stop
 `, ifName)
+
 	return RunPowerShell(ps)
 }
 

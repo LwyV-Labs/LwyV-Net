@@ -57,6 +57,7 @@ func IsMulticast(dst net.IP) bool {
 
 type PacketType uint8
 
+// 帧类型
 const (
 	PacketTypeIP PacketType = iota + 1
 	PacketTypePing
