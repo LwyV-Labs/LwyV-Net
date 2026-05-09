@@ -57,7 +57,6 @@ func (c *Client) Start(selectIndex int) {
 		log.Printf("服务端公钥配置错误: servers[%d].publicKey err=%v", selectIndex, err)
 	}
 
-	log.Printf("\n%#v\n", cconf)
 	for !c.stop.Load() {
 		conn, err := net.Dial("tcp", cconf.Servers[selectIndex].ServerIP)
 		if err != nil {
