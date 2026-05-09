@@ -140,6 +140,10 @@ func AddDefaultRoute(ifName, gateway string) error {
 	).Run()
 }
 
+func AddDefaultRouteToTun(ifName, gateway string) error {
+	return AddDefaultRoute(ifName, gateway)
+}
+
 func DeleteDefaultRoute(ifName, gateway string) error {
 	return exec.Command(
 		"ip", "route", "del",
