@@ -78,7 +78,7 @@ func SetupClientProxyRouting(serverAddr, tunIfName, tunGateway string) error {
 	)
 
 	// 再把默认路由切到 TUN
-	if err := AddDefaultRoute(tunIfName, tunGateway); err != nil {
+	if err := AddDefaultRouteToTun(tunIfName, tunGateway); err != nil {
 		_ = DeleteHostRoute(serverIP, orig.Gateway, origIfRef)
 		return fmt.Errorf("切换默认路由到TUN失败: %w", err)
 	}
