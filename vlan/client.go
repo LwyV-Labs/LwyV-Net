@@ -46,6 +46,12 @@ func (c *Client) Start(selectIndex int) {
 		log.Fatalf("配置TUN策略失败: %v", err)
 	}
 
+	peerStatic, err := secure.ParsePublicKey(cconf.Servers[selectIndex].PublicKey)
+	if err != nil {
+		log.Printf("服务端公钥配置错误: servers[%d].publicKey err=%v", selectIndex, err)
+	}
+	cconf.PeerStatic = peerStatic
+
 	for !c.stop.Load() {
 		conn, err := net.Dial("tcp", cconf.Servers[selectIndex].ServerIP)
 		if err != nil {
