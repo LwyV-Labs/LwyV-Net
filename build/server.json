@@ -1,8 +1,5 @@
 {
-  "privateKey": "",
-  "peerPublicKeys": [
-    ""
-  ],
+  "privateKey": "Gdgdwua7wo4v6i7/kwAX7AVbM1gT5WEqWukjRAOsh00=",
   "proxy": true,
   "mtu": 1300,
   "ifName": "LwyV-Gateway",

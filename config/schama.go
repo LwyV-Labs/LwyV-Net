@@ -3,11 +3,10 @@ package config
 import "github.com/LwyV-Labs/LwyV-Net/secure"
 
 type BaseConfig struct {
-	PrivateKey     string          `json:"privateKey"`
-	PeerPublicKeys []string        `json:"peerPublicKeys"`
-	Identity       secure.Identity `json:"-"`
-	PeerStatic     []byte          `json:"-"`
-	Proxy          bool            `json:"proxy"`
+	PrivateKey string          `json:"privateKey"`
+	Identity   secure.Identity `json:"-"`
+	PeerStatic []byte          `json:"-"`
+	Proxy      bool            `json:"proxy"`
 }
 
 // ServerConfig 服务端配置
@@ -30,10 +29,9 @@ type ServerEndpoint struct {
 // ClientConfig 客户端配置
 type ClientConfig struct {
 	BaseConfig
-	IfName      string           `json:"ifName"`
-	Servers     []ServerEndpoint `json:"servers"`
-	MTU         int              `json:"-"`
-	SelectedIdx int              `json:"-"`
+	IfName  string           `json:"ifName"`
+	Servers []ServerEndpoint `json:"servers"`
+	MTU     int              `json:"-"`
 }
 
 // VDHCPConfig 虚拟DHCP配置

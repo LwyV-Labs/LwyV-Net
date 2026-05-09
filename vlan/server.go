@@ -265,9 +265,6 @@ func (s *Server) performHandshake(peer *ClientPeer, initMsg []byte) error {
 		log.Printf("客户端认证失败: remote=%s localKeyID=%d err=%v", peer.conn.RemoteAddr(), keyID, err)
 		return err
 	}
-	if !config.IsPeerStaticAllowed(remotePub) {
-		return fmt.Errorf("peer public key not allowed")
-	}
 	peer.peerPublicKey = base64.StdEncoding.EncodeToString(remotePub)
 	peer.deviceID = secure.DeviceIDFromPublicKey(remotePub)
 	// 用新会话替换旧会话，实现平滑轮转。
