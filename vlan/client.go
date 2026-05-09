@@ -172,13 +172,13 @@ func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) 
 }
 
 func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr *secure.SessionManager) {
-	ticker := time.NewTicker(RandomInterval(heartbeatInterval, heartbeatFluctuate))
-	defer ticker.Stop()
+	heartbeatTicker := time.NewTicker(RandomInterval(heartbeatInterval, heartbeatFluctuate))
+	defer heartbeatTicker.Stop()
 	for {
 		select {
 		case <-done:
 			return
-		case <-ticker.C:
+		case <-heartbeatTicker.C:
 			// 心跳包用于保活与探测链路可用性。
 			if err := writeFrame(conn, PacketTypePing, nil); err != nil {
 				return
@@ -197,7 +197,19 @@ func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr 
 }
 
 func (c *Client) connToTun(conn net.Conn, sessionMgr *secure.SessionManager) {
+	rekeyTicker := time.NewTicker(secure.RekeyInterval)
+	defer rekeyTicker.Stop()
 	for {
+		select {
+		case <-rekeyTicker.C:
+			if err := c.performHandshake(conn, sessionMgr); err != nil {
+				log.Printf("定时密钥切换失败: %v", err)
+				return
+			}
+			log.Printf("✅ 定时密钥切换完成: interval=%s", secure.RekeyInterval)
+			continue
+		default:
+		}
 		frame, err := readFrame(conn)
 		if err != nil {
 			return
