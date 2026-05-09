@@ -22,6 +22,17 @@ type Config struct {
 	VDHCP  VDHCPConfig  `json:"vdhcp"`
 }
 
+type ServerFileConfig struct {
+	Common CommonConfig `json:"common"`
+	Server ServerConfig `json:"server"`
+	VDHCP  VDHCPConfig  `json:"vdhcp"`
+}
+
+type ClientFileConfig struct {
+	Common CommonConfig `json:"common"`
+	Client ClientConfig `json:"client"`
+}
+
 // CommonConfig 通用配置
 type CommonConfig struct {
 	PrivateKey     string          `json:"privateKey"`
@@ -69,98 +80,101 @@ const (
 
 var allowedPeerStaticSet map[string]struct{}
 
-// LoadConfig 自动加载配置文件
-func LoadConfig(mode string, serverIndex int) Config {
+func LoadClientConfig(serverIndex int) Config {
 	allowedPeerStaticSet = make(map[string]struct{})
 	Conf := Config{}
-
-	// 第一步：把配置文件完整读入内存。
 	path := clientConfigPath
-	if mode == "server" {
-		path = serverConfigPath
-	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		log.Fatalf("加载配置文件失败：%v", err)
 	}
-	// 第二步：将 JSON 反序列化到全局配置结构体 Conf。
-	err = json.Unmarshal(data, &Conf)
-	if err != nil {
+	clientConf := ClientFileConfig{}
+	if err = json.Unmarshal(data, &clientConf); err != nil {
 		log.Fatalf("解析配置文件失败：%v", err)
 	}
-	// 若配置未填写本机私钥，则启动时自动生成并回写配置，避免首次部署手工操作。
-	if strings.TrimSpace(Conf.Common.PrivateKey) == "" {
-		publicKey, genErr := GenerateAndWriteKeys(path, "")
-		if genErr != nil {
-			log.Fatalf("common.privateKey为空且自动初始化失败: %v", genErr)
-		}
-		log.Printf("✅ 检测到 common.privateKey 为空，已自动生成并写入配置文件: %s", path)
-		log.Printf("本机 publicKey: %s", publicKey)
-		log.Printf("请把该 publicKey 填到对端配置的 common.peerPublicKeys[0]")
-		// 回写后重新加载一次配置，确保内存中的 Conf 与磁盘一致。
-		data, err = os.ReadFile(path)
-		if err != nil {
-			log.Fatalf("重新加载配置文件失败：%v", err)
-		}
-		if err = json.Unmarshal(data, &Conf); err != nil {
-			log.Fatalf("重新解析配置文件失败：%v", err)
+	Conf.Common = clientConf.Common
+	Conf.Client = clientConf.Client
+	validateClientConfig(&Conf, serverIndex)
+	return Conf
+}
+
+func LoadServerConfig() Config {
+	allowedPeerStaticSet = make(map[string]struct{})
+	Conf := Config{}
+	path := serverConfigPath
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatalf("加载配置文件失败：%v", err)
+	}
+	serverConf := ServerFileConfig{}
+	if err = json.Unmarshal(data, &serverConf); err != nil {
+		log.Fatalf("解析配置文件失败：%v", err)
+	}
+	Conf.Common = serverConf.Common
+	Conf.Server = serverConf.Server
+	Conf.VDHCP = serverConf.VDHCP
+	validateServerConfig(&Conf)
+	return Conf
+}
+
+func validateClientConfig(conf *Config, serverIndex int) {
+	if len(conf.Client.Servers) == 0 {
+		log.Fatalf("client.servers 不能为空")
+	}
+	if serverIndex < 1 || serverIndex > len(conf.Client.Servers) {
+		log.Fatalf("服务端序号无效: %d，合法范围: 1-%d", serverIndex, len(conf.Client.Servers))
+	}
+	selected := conf.Client.Servers[serverIndex-1]
+	conf.Client.SelectedIdx = serverIndex - 1
+	if strings.TrimSpace(selected.PublicKey) == "" {
+		log.Fatalf("client.servers[%d].publicKey 不能为空", serverIndex-1)
+	}
+	if selected.MTU <= 0 {
+		log.Fatalf("client.servers[%d].mtu 必须大于0", serverIndex-1)
+	}
+	conf.Common.PeerPublicKeys = []string{selected.PublicKey}
+	conf.Common.MTU = selected.MTU
+	fillCommonDerivedFields(conf)
+}
+
+func validateServerConfig(conf *Config) {
+	fillCommonDerivedFields(conf)
+	if net.ParseIP(conf.VDHCP.Gateway) == nil {
+		log.Fatalf("非法网关地址: %s", conf.VDHCP.Gateway)
+	}
+	if conf.VDHCP.SubnetMask != "" {
+		if _, err := MaskToPrefix(conf.VDHCP.SubnetMask); err != nil {
+			log.Fatalf("非法子网掩码: %s, 错误: %v", conf.VDHCP.SubnetMask, err)
 		}
 	}
+}
 
-	if mode == "client" {
-		if len(Conf.Client.Servers) == 0 {
-			log.Fatalf("client.servers 不能为空")
-		}
-		if serverIndex < 1 || serverIndex > len(Conf.Client.Servers) {
-			log.Fatalf("服务端序号无效: %d，合法范围: 1-%d", serverIndex, len(Conf.Client.Servers))
-		}
-		selected := Conf.Client.Servers[serverIndex-1]
-		Conf.Client.SelectedIdx = serverIndex - 1
-		if strings.TrimSpace(selected.PublicKey) == "" {
-			log.Fatalf("client.servers[%d].publicKey 不能为空", serverIndex-1)
-		}
-		if selected.MTU <= 0 {
-			log.Fatalf("client.servers[%d].mtu 必须大于0", serverIndex-1)
-		}
-		Conf.Common.PeerPublicKeys = []string{selected.PublicKey}
-		Conf.Common.MTU = selected.MTU
-	}
-
-	// 第三步：做字段合法性校验 + 衍生字段填充（例如密钥解析）。
-	// privateKey / peerPublicKey 在 YAML 中是字符串，
+func fillCommonDerivedFields(conf *Config) {
+	// privateKey / peerPublicKeys 在 JSON 中是字符串，
 	// 这里会解析成后续握手加密真正要用的二进制对象。
-	if Conf.Common.PrivateKey != "" {
-		identity, err := secure.ParsePrivateKey(Conf.Common.PrivateKey)
+	if conf.Common.PrivateKey != "" {
+		identity, err := secure.ParsePrivateKey(conf.Common.PrivateKey)
 		if err != nil {
 			log.Fatalf("解析privateKey失败: %v", err)
 		}
-		Conf.Common.Identity = identity
+		conf.Common.Identity = identity
+	} else {
+		log.Fatalf("common.privateKey 不能为空")
 	}
-	for i, key := range Conf.Common.PeerPublicKeys {
+	for i, key := range conf.Common.PeerPublicKeys {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
 		peer, err := secure.ParsePublicKey(key)
 		if err != nil {
 			log.Fatalf("解析peerPublicKeys[%d]失败: %v", i, err)
 		}
 		if i == 0 {
 			// IK 作为发起方需要预先知道服务端静态公钥，这里约定使用列表首项。
-			Conf.Common.PeerStatic = append([]byte(nil), peer...)
-		}
-		if allowedPeerStaticSet == nil {
-			allowedPeerStaticSet = make(map[string]struct{})
+			conf.Common.PeerStatic = append([]byte(nil), peer...)
 		}
 		allowedPeerStaticSet[string(peer)] = struct{}{}
 	}
-
-	// 网关、掩码必须能被正确解析。
-	if mode == "server" && net.ParseIP(Conf.VDHCP.Gateway) == nil {
-		log.Fatalf("非法网关地址: %s", Conf.VDHCP.Gateway)
-	}
-	if Conf.VDHCP.SubnetMask != "" {
-		if _, err := MaskToPrefix(Conf.VDHCP.SubnetMask); err != nil {
-			log.Fatalf("非法子网掩码: %s, 错误: %v", Conf.VDHCP.SubnetMask, err)
-		}
-	}
-	return Conf
 }
 
 func IsPeerStaticAllowed(remotePub []byte) bool {

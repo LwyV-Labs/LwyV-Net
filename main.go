@@ -23,12 +23,12 @@ const (
 func main() {
 	mode := parseRunMode(os.Args)
 	serverIndex := parseServerIndex(os.Args)
-	confs := config.LoadConfig(mode, serverIndex)
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 
 	switch mode {
 	case string(RunModeServer):
+		confs := config.LoadServerConfig()
 		server := vlan.NewServer(confs)
 		go server.Start()
 		stopStats := make(chan struct{})
@@ -38,6 +38,7 @@ func main() {
 		server.Stop()
 		return
 	case string(RunModeClient):
+		confs := config.LoadClientConfig(serverIndex)
 		client := vlan.NewClient(confs)
 		go client.Start()
 		stopStats := make(chan struct{})
