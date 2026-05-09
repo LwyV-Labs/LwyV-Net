@@ -21,7 +21,7 @@ const (
 
 var allowedPeerStaticSet map[string]struct{}
 
-func LoadClientConfig(serverIndex int) ClientConfig {
+func LoadClientConfig() ClientConfig {
 	allowedPeerStaticSet = make(map[string]struct{})
 	Conf := ClientConfig{}
 	path := clientConfigPath
@@ -32,7 +32,7 @@ func LoadClientConfig(serverIndex int) ClientConfig {
 	if err = json.Unmarshal(data, &Conf); err != nil {
 		log.Fatalf("解析配置文件失败：%v", err)
 	}
-	validateClientConfig(&Conf, serverIndex)
+	validateClientConfig(&Conf)
 	return Conf
 }
 
@@ -51,21 +51,27 @@ func LoadServerConfig() ServerConfig {
 	return Conf
 }
 
-func validateClientConfig(conf *ClientConfig, serverIndex int) {
+func validateClientConfig(conf *ClientConfig) {
 	if len(conf.Servers) == 0 {
 		log.Fatalf("client.servers 不能为空")
 	}
+	for i, server := range conf.Servers {
+		if strings.TrimSpace(server.PublicKey) == "" {
+			log.Fatalf("client.servers[%d].publicKey 不能为空", i)
+		}
+		if server.MTU <= 0 {
+			log.Fatalf("client.servers[%d].mtu 必须大于0", i)
+		}
+	}
+	fillDerivedFields(&conf.BaseConfig)
+}
+
+func ApplyClientServerSelection(conf *ClientConfig, serverIndex int) {
 	if serverIndex < 1 || serverIndex > len(conf.Servers) {
 		log.Fatalf("服务端序号无效: %d，合法范围: 1-%d", serverIndex, len(conf.Servers))
 	}
 	selected := conf.Servers[serverIndex-1]
 	conf.SelectedIdx = serverIndex - 1
-	if strings.TrimSpace(selected.PublicKey) == "" {
-		log.Fatalf("client.servers[%d].publicKey 不能为空", serverIndex-1)
-	}
-	if selected.MTU <= 0 {
-		log.Fatalf("client.servers[%d].mtu 必须大于0", serverIndex-1)
-	}
 	conf.PeerPublicKeys = []string{selected.PublicKey}
 	conf.MTU = selected.MTU
 	fillDerivedFields(&conf.BaseConfig)
@@ -86,15 +92,19 @@ func validateServerConfig(conf *ServerConfig) {
 func fillDerivedFields(base *BaseConfig) {
 	// privateKey / peerPublicKeys 在 JSON 中是字符串，
 	// 这里会解析成后续握手加密真正要用的二进制对象。
-	if base.PrivateKey != "" {
-		identity, err := secure.ParsePrivateKey(base.PrivateKey)
+	if strings.TrimSpace(base.PrivateKey) == "" {
+		privateKey, publicKey, err := generateNoiseKeyPair()
 		if err != nil {
-			log.Fatalf("解析privateKey失败: %v", err)
+			log.Fatalf("自动生成privateKey失败: %v", err)
 		}
-		base.Identity = identity
-	} else {
-		log.Fatalf("privateKey 不能为空")
+		base.PrivateKey = privateKey
+		log.Printf("privateKey 为空，已自动生成新密钥；请持久化该密钥。publicKey=%s", publicKey)
 	}
+	identity, err := secure.ParsePrivateKey(base.PrivateKey)
+	if err != nil {
+		log.Fatalf("解析privateKey失败: %v", err)
+	}
+	base.Identity = identity
 	for i, key := range base.PeerPublicKeys {
 		if strings.TrimSpace(key) == "" {
 			continue

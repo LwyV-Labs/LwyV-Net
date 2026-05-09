@@ -36,8 +36,10 @@ func NewClient(confs config.ClientConfig) *Client {
 	return &Client{}
 }
 
-func (c *Client) Start(selectIndex int) {
-	// 1) 创建 TUN 网卡；2) 放行本机策略；3) 启动收发循环。
+func (c *Client) Start(serverIndex int) {
+	// 1) 选择目标服务端配置；2) 创建 TUN 网卡；3) 启动收发循环。
+	config.ApplyClientServerSelection(&cconf, serverIndex)
+	selectIndex := cconf.SelectedIdx
 	var err error
 	if c.tun, err = tunSetup.NewTUNTunnel(cconf.IfName, cconf.MTU); err != nil {
 		log.Fatalf("创建虚拟网卡失败: %v", err)

@@ -38,9 +38,9 @@ func main() {
 		server.Stop()
 		return
 	case string(RunModeClient):
-		confs := config.LoadClientConfig(serverIndex)
+		confs := config.LoadClientConfig()
 		client := vlan.NewClient(confs)
-		go client.Start()
+		go client.Start(serverIndex)
 		stopStats := make(chan struct{})
 		go monitorClientStats(client, stopStats)
 		<-ch
