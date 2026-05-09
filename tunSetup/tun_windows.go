@@ -164,7 +164,7 @@ func GetDefaultRoute() (*defaultRouteInfo, error) {
 	ps := `
 $rt = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop |
     Where-Object { $_.NextHop -ne "0.0.0.0" } |
-    Sort-Object RouteMetric |
+    Sort-Object @{Expression = { $_.RouteMetric + $_.InterfaceMetric }}, RouteMetric, InterfaceMetric |
     Select-Object -First 1
 
 if (-not $rt) {
@@ -238,11 +238,14 @@ Start-Sleep -Milliseconds 800
 
 $ifIndex = Resolve-InterfaceIndex $ifRef
 
+# 先把 TUN 接口度量调到最低，避免“同为默认路由但仍走真实网卡”的分流问题。
+Set-NetIPInterface -AddressFamily IPv4 -InterfaceIndex $ifIndex -AutomaticMetric Disabled -InterfaceMetric 1 -ErrorAction Stop
+
 Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
     Where-Object { $_.InterfaceIndex -eq $ifIndex } |
     Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
 
-New-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -InterfaceIndex $ifIndex -NextHop $gw -RouteMetric 5 -ErrorAction Stop
+New-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -InterfaceIndex $ifIndex -NextHop $gw -RouteMetric 1 -ErrorAction Stop
 `, PsResolveInterfaceIndexFunc(), ifRef, gateway)
 
 	return RunPowerShell(ps)
