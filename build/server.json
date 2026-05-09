@@ -1,17 +1,13 @@
 {
-  "common": {
-    "privateKey": "",
-    "peerPublicKeys": [
-      ""
-    ],
-    "mtu": 1300,
-    "proxy": true
-  },
-  "server": {
-    "port": 9999,
-    "ifName": "LwyV-Gateway",
-    "egressIf": ""
-  },
+  "privateKey": "",
+  "peerPublicKeys": [
+    ""
+  ],
+  "mtu": 1300,
+  "proxy": true,
+  "port": 9999,
+  "ifName": "LwyV-Gateway",
+  "egressIf": "",
   "vdhcp": {
     "startIP": "172.19.0.10",
     "endIP": "172.19.0.200",

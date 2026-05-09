@@ -16,39 +16,26 @@ import (
 
 // Config 总配置结构体（对应整个yaml文件）
 type Config struct {
-	Common CommonConfig `json:"common"`
 	Server ServerConfig `json:"server"`
 	Client ClientConfig `json:"client"`
-	VDHCP  VDHCPConfig  `json:"vdhcp"`
 }
 
-type ServerFileConfig struct {
-	Common CommonConfig `json:"common"`
-	Server ServerConfig `json:"server"`
-	VDHCP  VDHCPConfig  `json:"vdhcp"`
-}
-
-type ClientFileConfig struct {
-	Common CommonConfig `json:"common"`
-	Client ClientConfig `json:"client"`
-}
-
-// CommonConfig 通用配置
-type CommonConfig struct {
+type BaseConfig struct {
 	PrivateKey     string          `json:"privateKey"`
 	PeerPublicKeys []string        `json:"peerPublicKeys"`
 	Identity       secure.Identity `json:"-"`
 	PeerStatic     []byte          `json:"-"`
-	MTU            int             `json:"mtu"`
 	Proxy          bool            `json:"proxy"`
-	SubnetMask     string          `json:"subnetMask"`
 }
 
 // ServerConfig 服务端配置
 type ServerConfig struct {
+	BaseConfig
+	MTU      int         `json:"mtu"`
 	Port     int    `json:"port"`
 	IfName   string `json:"ifName"`
 	EgressIf string `json:"egressIf"`
+	VDHCP    VDHCPConfig `json:"vdhcp"`
 }
 
 type ServerEndpoint struct {
@@ -60,8 +47,10 @@ type ServerEndpoint struct {
 
 // ClientConfig 客户端配置
 type ClientConfig struct {
+	BaseConfig
 	IfName      string           `json:"ifName"`
 	Servers     []ServerEndpoint `json:"servers"`
+	MTU         int              `json:"-"`
 	SelectedIdx int              `json:"-"`
 }
 
@@ -88,12 +77,9 @@ func LoadClientConfig(serverIndex int) Config {
 	if err != nil {
 		log.Fatalf("加载配置文件失败：%v", err)
 	}
-	clientConf := ClientFileConfig{}
-	if err = json.Unmarshal(data, &clientConf); err != nil {
+	if err = json.Unmarshal(data, &Conf.Client); err != nil {
 		log.Fatalf("解析配置文件失败：%v", err)
 	}
-	Conf.Common = clientConf.Common
-	Conf.Client = clientConf.Client
 	validateClientConfig(&Conf, serverIndex)
 	return Conf
 }
@@ -106,13 +92,9 @@ func LoadServerConfig() Config {
 	if err != nil {
 		log.Fatalf("加载配置文件失败：%v", err)
 	}
-	serverConf := ServerFileConfig{}
-	if err = json.Unmarshal(data, &serverConf); err != nil {
+	if err = json.Unmarshal(data, &Conf.Server); err != nil {
 		log.Fatalf("解析配置文件失败：%v", err)
 	}
-	Conf.Common = serverConf.Common
-	Conf.Server = serverConf.Server
-	Conf.VDHCP = serverConf.VDHCP
 	validateServerConfig(&Conf)
 	return Conf
 }
@@ -132,36 +114,36 @@ func validateClientConfig(conf *Config, serverIndex int) {
 	if selected.MTU <= 0 {
 		log.Fatalf("client.servers[%d].mtu 必须大于0", serverIndex-1)
 	}
-	conf.Common.PeerPublicKeys = []string{selected.PublicKey}
-	conf.Common.MTU = selected.MTU
-	fillCommonDerivedFields(conf)
+	conf.Client.PeerPublicKeys = []string{selected.PublicKey}
+	conf.Client.MTU = selected.MTU
+	fillDerivedFields(&conf.Client.BaseConfig)
 }
 
 func validateServerConfig(conf *Config) {
-	fillCommonDerivedFields(conf)
-	if net.ParseIP(conf.VDHCP.Gateway) == nil {
-		log.Fatalf("非法网关地址: %s", conf.VDHCP.Gateway)
+	fillDerivedFields(&conf.Server.BaseConfig)
+	if net.ParseIP(conf.Server.VDHCP.Gateway) == nil {
+		log.Fatalf("非法网关地址: %s", conf.Server.VDHCP.Gateway)
 	}
-	if conf.VDHCP.SubnetMask != "" {
-		if _, err := MaskToPrefix(conf.VDHCP.SubnetMask); err != nil {
-			log.Fatalf("非法子网掩码: %s, 错误: %v", conf.VDHCP.SubnetMask, err)
+	if conf.Server.VDHCP.SubnetMask != "" {
+		if _, err := MaskToPrefix(conf.Server.VDHCP.SubnetMask); err != nil {
+			log.Fatalf("非法子网掩码: %s, 错误: %v", conf.Server.VDHCP.SubnetMask, err)
 		}
 	}
 }
 
-func fillCommonDerivedFields(conf *Config) {
+func fillDerivedFields(base *BaseConfig) {
 	// privateKey / peerPublicKeys 在 JSON 中是字符串，
 	// 这里会解析成后续握手加密真正要用的二进制对象。
-	if conf.Common.PrivateKey != "" {
-		identity, err := secure.ParsePrivateKey(conf.Common.PrivateKey)
+	if base.PrivateKey != "" {
+		identity, err := secure.ParsePrivateKey(base.PrivateKey)
 		if err != nil {
 			log.Fatalf("解析privateKey失败: %v", err)
 		}
-		conf.Common.Identity = identity
+		base.Identity = identity
 	} else {
-		log.Fatalf("common.privateKey 不能为空")
+		log.Fatalf("privateKey 不能为空")
 	}
-	for i, key := range conf.Common.PeerPublicKeys {
+	for i, key := range base.PeerPublicKeys {
 		if strings.TrimSpace(key) == "" {
 			continue
 		}
@@ -171,7 +153,7 @@ func fillCommonDerivedFields(conf *Config) {
 		}
 		if i == 0 {
 			// IK 作为发起方需要预先知道服务端静态公钥，这里约定使用列表首项。
-			conf.Common.PeerStatic = append([]byte(nil), peer...)
+			base.PeerStatic = append([]byte(nil), peer...)
 		}
 		allowedPeerStaticSet[string(peer)] = struct{}{}
 	}
@@ -257,20 +239,37 @@ func writeKeysToConfig(path string, privateKey string, peerPublicKey string) err
 		return fmt.Errorf("读取配置文件失败: %w", err)
 	}
 
-	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return fmt.Errorf("解析配置文件失败: %w", err)
-	}
-	if privateKey != "" {
-		cfg.Common.PrivateKey = privateKey
-	}
-	if peerPublicKey != "" {
-		cfg.Common.PeerPublicKeys = []string{peerPublicKey}
-	}
-
-	out, err := json.MarshalIndent(&cfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("编码配置文件失败: %w", err)
+	var out []byte
+	if path == serverConfigPath {
+		var cfg ServerConfig
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return fmt.Errorf("解析配置文件失败: %w", err)
+		}
+		if privateKey != "" {
+			cfg.PrivateKey = privateKey
+		}
+		if peerPublicKey != "" {
+			cfg.PeerPublicKeys = []string{peerPublicKey}
+		}
+		out, err = json.MarshalIndent(&cfg, "", "  ")
+		if err != nil {
+			return fmt.Errorf("编码配置文件失败: %w", err)
+		}
+	} else {
+		var cfg ClientConfig
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return fmt.Errorf("解析配置文件失败: %w", err)
+		}
+		if privateKey != "" {
+			cfg.PrivateKey = privateKey
+		}
+		if peerPublicKey != "" {
+			cfg.PeerPublicKeys = []string{peerPublicKey}
+		}
+		out, err = json.MarshalIndent(&cfg, "", "  ")
+		if err != nil {
+			return fmt.Errorf("编码配置文件失败: %w", err)
+		}
 	}
 
 	perm := os.FileMode(0644)
