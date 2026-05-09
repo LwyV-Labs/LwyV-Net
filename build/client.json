@@ -11,9 +11,9 @@
     },
     {
       "name": "backup",
-      "ip": "64.83.34.54:9999",
+      "ip": "64.83.34.53:9999",
       "publicKey": "dfWVua+ZYFhQchiYyhgeYroFquD0bf98zHjG6YYv2kE=",
-      "mtu": 1280
+      "mtu": 1300
     }
   ]
 }

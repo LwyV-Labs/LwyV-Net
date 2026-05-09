@@ -54,7 +54,7 @@ func (c *Client) Start(selectIndex int) {
 			continue
 		}
 		c.conn = conn
-		log.Printf("已连接服务端: %s", cconf.Servers[selectIndex].ServerIP)
+		log.Printf("✅ 已连接服务端: %s", cconf.Servers[selectIndex].ServerIP)
 		c.runSession(conn, cconf.Servers[selectIndex].ServerIP)
 		time.Sleep(time.Second)
 	}

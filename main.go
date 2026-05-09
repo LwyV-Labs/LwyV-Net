@@ -54,7 +54,7 @@ func main() {
 
 func parseServerIndex(args []string) int {
 	if len(args) < 3 {
-		return 1
+		return 0
 	}
 	var idx int
 	if _, err := fmt.Sscanf(args[2], "%d", &idx); err != nil || idx < 1 {
