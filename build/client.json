@@ -1,23 +1,19 @@
 {
-  "common": {
-    "privateKey": "",
-    "proxy": true
-  },
-  "client": {
-    "ifName": "LwyV-NetAdapter",
-    "servers": [
-      {
-        "name": "primary",
-        "ip": "64.83.34.53:9999",
-        "publicKey": "base64-public-key-of-primary",
-        "mtu": 1300
-      },
-      {
-        "name": "backup",
-        "ip": "64.83.34.54:9999",
-        "publicKey": "base64-public-key-of-backup",
-        "mtu": 1280
-      }
-    ]
-  }
+  "privateKey": "",
+  "proxy": true,
+  "ifName": "LwyV-NetAdapter",
+  "servers": [
+    {
+      "name": "primary",
+      "ip": "64.83.34.53:9999",
+      "publicKey": "base64-public-key-of-primary",
+      "mtu": 1300
+    },
+    {
+      "name": "backup",
+      "ip": "64.83.34.54:9999",
+      "publicKey": "base64-public-key-of-backup",
+      "mtu": 1280
+    }
+  ]
 }

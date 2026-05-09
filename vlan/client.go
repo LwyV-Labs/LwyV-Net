@@ -39,7 +39,7 @@ func NewClient(confs config.Config) *Client {
 func (c *Client) Start() {
 	// 1) 创建 TUN 网卡；2) 放行本机策略；3) 启动收发循环。
 	var err error
-	if c.tun, err = tunSetup.NewTUNTunnel(conf.Client.IfName, conf.Common.MTU); err != nil {
+	if c.tun, err = tunSetup.NewTUNTunnel(conf.Client.IfName, conf.Client.MTU); err != nil {
 		log.Fatalf("创建虚拟网卡失败: %v", err)
 	}
 	if err = tunSetup.AllowTunTraffic(conf.Client.IfName); err != nil {
@@ -120,7 +120,7 @@ func (c *Client) initAddress(conn net.Conn, sessionMgr *secure.SessionManager) e
 	if err = tunSetup.ConfigureTunAddress(conf.Client.IfName, dhcpIP, dhcpMask); err != nil {
 		return fmt.Errorf("配置虚拟网卡 IP 失败: %w", err)
 	}
-	if conf.Common.Proxy {
+	if conf.Client.Proxy {
 		// 代理模式：把默认流量经虚拟网卡导向服务端网关。
 		if err = tunSetup.SetupClientProxyRouting(conf.SelectedServer().ServerIP, conf.Client.IfName, dhcpGateway); err != nil {
 			return fmt.Errorf("客户端代理路由初始化失败: %w", err)
@@ -215,10 +215,10 @@ func (c *Client) connToTun(conn net.Conn, sessionMgr *secure.SessionManager) {
 
 func (c *Client) performHandshake(conn net.Conn, sessionMgr *secure.SessionManager) error {
 	// 客户端作为发起方（Initiator）完成一次 Noise 握手。
-	if len(conf.Common.Identity.Private) == 0 {
+	if len(conf.Client.Identity.Private) == 0 {
 		return fmt.Errorf("common.privateKey is required")
 	}
-	hs := secure.NewHandshaker(conf.Common.Identity, conf.Common.PeerStatic)
+	hs := secure.NewHandshaker(conf.Client.Identity, conf.Client.PeerStatic)
 	keyID := c.keyID.Add(1)
 	log.Printf("开始认证握手: keyID=%d", keyID)
 	session, err := hs.InitiatorHandshake(
