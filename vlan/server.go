@@ -89,7 +89,7 @@ func (s *Server) Start() {
 		if err = tunSetup.ConfigureTunAddress(sconf.IfName, sconf.VDHCP.Gateway, sconf.VDHCP.SubnetMask); err != nil {
 			log.Fatalf("配置服务端TUN地址失败: %v", err)
 		}
-		if err = tunSetup.EnableServerGatewayNAT(sconf.IfName, sconf.VDHCP.Gateway, sconf.VDHCP.SubnetMask, sconf.EgressIf); err != nil {
+		if err = tunSetup.EnableServerGatewayNAT(sconf.IfName, sconf.VDHCP.Gateway, sconf.VDHCP.SubnetMask); err != nil {
 			log.Fatalf("配置服务端NAT失败: %v", err)
 		}
 	}

@@ -22,7 +22,7 @@ type serverGatewayNATState struct {
 
 var serverNATState serverGatewayNATState
 
-func EnableServerGatewayNAT(ifName, gatewayIP, mask, egressIf string) error {
+func EnableServerGatewayNAT(ifName, gatewayIP, mask string) error {
 	serverNATState.mu.Lock()
 	defer serverNATState.mu.Unlock()
 
@@ -36,11 +36,9 @@ func EnableServerGatewayNAT(ifName, gatewayIP, mask, egressIf string) error {
 	}
 	subnet := fmt.Sprintf("%s/%d", networkAddr(gatewayIP, mask), prefix)
 
-	if egressIf == "" {
-		egressIf, err = detectDefaultEgressIf()
-		if err != nil {
-			return err
-		}
+	egressIf, err := detectDefaultEgressIf()
+	if err != nil {
+		return err
 	}
 
 	oldForwardBytes, _ := exec.Command("sysctl", "-n", "net.ipv4.ip_forward").Output()

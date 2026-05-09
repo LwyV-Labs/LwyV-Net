@@ -12,11 +12,10 @@ type BaseConfig struct {
 // ServerConfig 服务端配置
 type ServerConfig struct {
 	BaseConfig
-	MTU      int         `json:"mtu"`
-	Port     int         `json:"port"`
-	IfName   string      `json:"ifName"`
-	EgressIf string      `json:"egressIf"`
-	VDHCP    VDHCPConfig `json:"vdhcp"`
+	MTU    int         `json:"mtu"`
+	Port   int         `json:"port"`
+	IfName string      `json:"ifName"`
+	VDHCP  VDHCPConfig `json:"vdhcp"`
 }
 
 type ServerEndpoint struct {
