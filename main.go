@@ -40,7 +40,7 @@ func main() {
 	case string(RunModeClient):
 		confs := config.LoadClientConfig(serverIndex)
 		client := vlan.NewClient(confs)
-		go client.Start()
+		go client.Start(confs.SelectedIdx)
 		stopStats := make(chan struct{})
 		go monitorClientStats(client, stopStats)
 		<-ch
