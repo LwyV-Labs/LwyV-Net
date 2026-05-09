@@ -84,16 +84,16 @@ func (s *Server) Start() {
 		if s.tun, err = tunSetup.NewTUNTunnel(conf.Server.IfName, conf.Common.MTU); err != nil {
 			log.Fatalf("创建服务端TUN失败: %V", err)
 		}
-		if err = tunSetup.ConfigureTunAddress(conf.Server.IfName, conf.Common.Gateway, conf.VDHCP.SubnetMask); err != nil {
+		if err = tunSetup.ConfigureTunAddress(conf.Server.IfName, conf.VDHCP.Gateway, conf.VDHCP.SubnetMask); err != nil {
 			log.Fatalf("配置服务端TUN地址失败: %V", err)
 		}
-		if err = tunSetup.EnableServerGatewayNAT(conf.Server.IfName, conf.Common.Gateway, conf.VDHCP.SubnetMask, conf.Server.EgressIf); err != nil {
+		if err = tunSetup.EnableServerGatewayNAT(conf.Server.IfName, conf.VDHCP.Gateway, conf.VDHCP.SubnetMask, conf.Server.EgressIf); err != nil {
 			log.Fatalf("配置服务端NAT失败: %V", err)
 		}
 	}
 	// 启动下行分发：服务端 TUN -> 对应客户端。
 	go s.tunToClients()
-	log.Printf("✅ 服务端网关已启用: if=%s gw=%s/%s", conf.Server.IfName, conf.Common.Gateway, conf.VDHCP.SubnetMask)
+	log.Printf("✅ 服务端网关已启用: if=%s gw=%s/%s", conf.Server.IfName, conf.VDHCP.Gateway, conf.VDHCP.SubnetMask)
 
 	// 3) 启动 KCP 监听
 	s.listener, err = net.Listen("tcp", fmt.Sprintf(":%d", conf.Server.Port))
@@ -315,7 +315,7 @@ func (s *Server) handleVDHCP(peer *ClientPeer, pkt []byte) {
 		peer.mu.Unlock()
 		return
 	}
-	offer, err := vdhcp.EncodeOffer(ip, s.dhcpMask, conf.Common.Gateway)
+	offer, err := vdhcp.EncodeOffer(ip, s.dhcpMask, conf.VDHCP.Gateway)
 	if err != nil {
 		return
 	}
@@ -343,7 +343,7 @@ func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {
 		ipHdr.Src.String() != peer.virtualIP ||
 		IsBroadcast(ipHdr.Dst) ||
 		IsMulticast(ipHdr.Dst) ||
-		IsSubnetBroadcast(ipHdr.Dst, conf.Common.Gateway, conf.VDHCP.SubnetMask) {
+		IsSubnetBroadcast(ipHdr.Dst, conf.VDHCP.Gateway, conf.VDHCP.SubnetMask) {
 		return
 	}
 

@@ -73,13 +73,13 @@ $env:CGO_ENABLED=0; $env:GOOS="linux"; $env:GOARCH="amd64";go build -trimpath -b
 
 ## 快速运行
 
-程序按启动模式读取当前目录下的配置：服务端读取 `server.yaml`，客户端读取 `client.yaml`。
+程序按启动模式读取当前目录下的配置：服务端读取 `server.json`，客户端读取 `client.json`。
 
 ### 1) 准备配置
 
 ```bash
-cp build/server.yaml server.yaml
-cp build/client.yaml client.yaml
+cp build/server.json server.json
+cp build/client.json client.json
 ```
 
 ### 2) 编译
@@ -94,7 +94,7 @@ go build -o build/lwyv-net .
 ./build/lwyv-net genkey
 ```
 
-把输出的 `publicKey` 互相填入对端对应配置文件（`server.yaml` 或 `client.yaml`）的 `common.peerPublicKeys`。
+把输出的 `publicKey` 互相填入对端对应配置文件（`server.json` 或 `client.json`）的 `common.peerPublicKeys`。
 
 ### 4) 启动服务端
 
@@ -105,11 +105,11 @@ sudo ./build/lwyv-net server
 ### 5) 启动客户端
 
 ```bash
-sudo ./build/lwyv-net client
+sudo ./build/lwyv-net client 1
 
 ```
 
-> 不传参数默认按客户端启动，即 `./build/lwyv-net` 等同于 `./build/lwyv-net client`。
+> 不传参数默认按客户端启动并连接第1个服务端，即 `./build/lwyv-net` 等同于 `./build/lwyv-net client 1`。
 
 ---
 

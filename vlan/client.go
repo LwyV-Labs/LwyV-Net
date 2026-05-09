@@ -47,14 +47,14 @@ func (c *Client) Start() {
 	}
 
 	for !c.stop.Load() {
-		conn, err := net.Dial("tcp", conf.Client.ServerIP)
+		conn, err := net.Dial("tcp", conf.SelectedServer().ServerIP)
 		if err != nil {
 			log.Printf("连接服务端失败: %v，1秒后重试", err)
 			time.Sleep(time.Second)
 			continue
 		}
 		c.conn = conn
-		log.Printf("已连接服务端: %s", conf.Client.ServerIP)
+		log.Printf("已连接服务端: %s", conf.SelectedServer().ServerIP)
 		c.runSession(conn)
 		time.Sleep(time.Second)
 	}
@@ -112,7 +112,7 @@ func (c *Client) runSession(conn net.Conn) {
 
 func (c *Client) initAddress(conn net.Conn, sessionMgr *secure.SessionManager) error {
 	// 通过虚拟 DHCP 从服务端申请一个虚拟网段地址。
-	dhcpIP, dhcpMask, err := c.requestVDHCP(conn, sessionMgr)
+	dhcpIP, dhcpMask, dhcpGateway, err := c.requestVDHCP(conn, sessionMgr)
 	if err != nil {
 		return err
 	}
@@ -122,42 +122,42 @@ func (c *Client) initAddress(conn net.Conn, sessionMgr *secure.SessionManager) e
 	}
 	if conf.Common.Proxy {
 		// 代理模式：把默认流量经虚拟网卡导向服务端网关。
-		if err = tunSetup.SetupClientProxyRouting(conf.Client.ServerIP, conf.Client.IfName, conf.Common.Gateway); err != nil {
+		if err = tunSetup.SetupClientProxyRouting(conf.SelectedServer().ServerIP, conf.Client.IfName, dhcpGateway); err != nil {
 			return fmt.Errorf("客户端代理路由初始化失败: %w", err)
 		}
 	}
 	return nil
 }
 
-func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) (string, string, error) {
+func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) (string, string, string, error) {
 	// DHCP Discover -> Offer 的最小流程（简化版 DHCP 协议）。
 	discover, err := vdhcp.EncodeDiscover()
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if err = writeSecureFrame(conn, sessionMgr, PacketTypeVDHCP, discover); err != nil {
 		log.Printf("发送DHCP Discover失败: %v", err)
-		return "", "", err
+		return "", "", "", err
 	}
 	frame, err := readFrame(conn)
 	if err != nil {
 		log.Printf("读取DHCP Offer失败: err=%v", err)
-		return "", "", fmt.Errorf("读取DHCP OFFER失败: %w", err)
+		return "", "", "", fmt.Errorf("读取DHCP OFFER失败: %w", err)
 	}
 	if frame.Type != PacketTypeSecure {
 		log.Printf("读取DHCP Offer失败: 非预期类型=%d", frame.Type)
-		return "", "", fmt.Errorf("读取DHCP OFFER失败")
+		return "", "", "", fmt.Errorf("读取DHCP OFFER失败")
 	}
 	innerType, plain, err := sessionMgr.Decrypt(frame.IPPacket)
 	if err != nil || PacketType(innerType) != PacketTypeVDHCP {
 		log.Printf("解密DHCP Offer失败: err=%v innerType=%d", err, innerType)
-		return "", "", fmt.Errorf("解密DHCP OFFER失败")
+		return "", "", "", fmt.Errorf("解密DHCP OFFER失败")
 	}
 	msg, err := vdhcp.DecodeMessage(plain)
-	if err != nil || msg.Type != vdhcp.MessageTypeOffer || msg.IP == "" || msg.SubnetMask == "" {
-		return "", "", fmt.Errorf("解析DHCP OFFER失败")
+	if err != nil || msg.Type != vdhcp.MessageTypeOffer || msg.IP == "" || msg.SubnetMask == "" || msg.Gateway == "" {
+		return "", "", "", fmt.Errorf("解析DHCP OFFER失败")
 	}
-	return msg.IP, msg.SubnetMask, nil
+	return msg.IP, msg.SubnetMask, msg.Gateway, nil
 }
 
 func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr *secure.SessionManager) {
