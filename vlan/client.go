@@ -29,33 +29,33 @@ type Client struct {
 	tun  *tunSetup.TUNTunnel
 }
 
-var conf config.Config
+var cconf config.ClientConfig
 
-func NewClient(confs config.Config) *Client {
-	conf = confs
+func NewClient(confs config.ClientConfig) *Client {
+	cconf = confs
 	return &Client{}
 }
 
-func (c *Client) Start() {
+func (c *Client) Start(selectIndex int) {
 	// 1) 创建 TUN 网卡；2) 放行本机策略；3) 启动收发循环。
 	var err error
-	if c.tun, err = tunSetup.NewTUNTunnel(conf.Client.IfName, conf.Client.MTU); err != nil {
+	if c.tun, err = tunSetup.NewTUNTunnel(cconf.IfName, cconf.MTU); err != nil {
 		log.Fatalf("创建虚拟网卡失败: %v", err)
 	}
-	if err = tunSetup.AllowTunTraffic(conf.Client.IfName); err != nil {
+	if err = tunSetup.AllowTunTraffic(cconf.IfName); err != nil {
 		log.Fatalf("配置TUN策略失败: %v", err)
 	}
 
 	for !c.stop.Load() {
-		conn, err := net.Dial("tcp", conf.SelectedServer().ServerIP)
+		conn, err := net.Dial("tcp", cconf.Servers[selectIndex].ServerIP)
 		if err != nil {
 			log.Printf("连接服务端失败: %v，1秒后重试", err)
 			time.Sleep(time.Second)
 			continue
 		}
 		c.conn = conn
-		log.Printf("已连接服务端: %s", conf.SelectedServer().ServerIP)
-		c.runSession(conn)
+		log.Printf("已连接服务端: %s", cconf.Servers[selectIndex].ServerIP)
+		c.runSession(conn, cconf.Servers[selectIndex].ServerIP)
 		time.Sleep(time.Second)
 	}
 }
@@ -85,7 +85,7 @@ func (c *Client) Stop() {
 	log.Printf("客户端已停止")
 }
 
-func (c *Client) runSession(conn net.Conn) {
+func (c *Client) runSession(conn net.Conn, serverIP string) {
 	// 每次连接对应一个会话管理器（保存当前密钥状态）。
 	sessionMgr := &secure.SessionManager{}
 	if err := c.performHandshake(conn, sessionMgr); err != nil {
@@ -94,7 +94,7 @@ func (c *Client) runSession(conn net.Conn) {
 		return
 	}
 	log.Printf("认证握手成功，开始申请虚拟地址")
-	if err := c.initAddress(conn, sessionMgr); err != nil {
+	if err := c.initAddress(conn, sessionMgr, serverIP); err != nil {
 		log.Printf("初始化地址失败: %v", err)
 		_ = conn.Close()
 		return
@@ -110,19 +110,19 @@ func (c *Client) runSession(conn net.Conn) {
 	c.clientSendLoop(conn, done, sessionMgr)
 }
 
-func (c *Client) initAddress(conn net.Conn, sessionMgr *secure.SessionManager) error {
+func (c *Client) initAddress(conn net.Conn, sessionMgr *secure.SessionManager, serverIP string) error {
 	// 通过虚拟 DHCP 从服务端申请一个虚拟网段地址。
 	dhcpIP, dhcpMask, dhcpGateway, err := c.requestVDHCP(conn, sessionMgr)
 	if err != nil {
 		return err
 	}
 	log.Printf("✅ 客户端已获取 VDHCP 虚拟地址: ip=%s mask=%s", dhcpIP, dhcpMask)
-	if err = tunSetup.ConfigureTunAddress(conf.Client.IfName, dhcpIP, dhcpMask); err != nil {
+	if err = tunSetup.ConfigureTunAddress(cconf.IfName, dhcpIP, dhcpMask); err != nil {
 		return fmt.Errorf("配置虚拟网卡 IP 失败: %w", err)
 	}
-	if conf.Client.Proxy {
+	if cconf.Proxy {
 		// 代理模式：把默认流量经虚拟网卡导向服务端网关。
-		if err = tunSetup.SetupClientProxyRouting(conf.SelectedServer().ServerIP, conf.Client.IfName, dhcpGateway); err != nil {
+		if err = tunSetup.SetupClientProxyRouting(serverIP, cconf.IfName, dhcpGateway); err != nil {
 			return fmt.Errorf("客户端代理路由初始化失败: %w", err)
 		}
 	}
@@ -215,10 +215,10 @@ func (c *Client) connToTun(conn net.Conn, sessionMgr *secure.SessionManager) {
 
 func (c *Client) performHandshake(conn net.Conn, sessionMgr *secure.SessionManager) error {
 	// 客户端作为发起方（Initiator）完成一次 Noise 握手。
-	if len(conf.Client.Identity.Private) == 0 {
+	if len(cconf.Identity.Private) == 0 {
 		return fmt.Errorf("common.privateKey is required")
 	}
-	hs := secure.NewHandshaker(conf.Client.Identity, conf.Client.PeerStatic)
+	hs := secure.NewHandshaker(cconf.Identity, cconf.PeerStatic)
 	keyID := c.keyID.Add(1)
 	log.Printf("开始认证握手: keyID=%d", keyID)
 	session, err := hs.InitiatorHandshake(

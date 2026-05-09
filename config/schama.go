@@ -2,12 +2,6 @@ package config
 
 import "github.com/LwyV-Labs/LwyV-Net/secure"
 
-// Config 总配置结构体（对应整个yaml文件）
-type Config struct {
-	Server ServerConfig `json:"server"`
-	Client ClientConfig `json:"client"`
-}
-
 type BaseConfig struct {
 	PrivateKey     string          `json:"privateKey"`
 	PeerPublicKeys []string        `json:"peerPublicKeys"`

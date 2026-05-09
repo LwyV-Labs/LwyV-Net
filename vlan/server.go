@@ -64,44 +64,46 @@ const (
 	serverPeerSendQueueSize = 16 * 1024
 )
 
-func NewServer(confs config.Config) *Server {
-	conf = confs
+var sconf config.ServerConfig
+
+func NewServer(confs config.ServerConfig) *Server {
+	sconf = confs
 	return &Server{clientTable: &KcpClient{m: make(map[string]*ClientPeer)}}
 }
 
 func (s *Server) Start() {
 	// 1 初始化地址池（vDHCP）
-	manager, err := vdhcp.NewManager(conf.Server.VDHCP.StartIP, conf.Server.VDHCP.EndIP)
+	manager, err := vdhcp.NewManager(sconf.VDHCP.StartIP, sconf.VDHCP.EndIP)
 	if err != nil {
 		log.Fatalf("初始化虚拟DHCP失败: %v", err)
 	}
 	s.dhcp = manager
-	s.dhcpMask = conf.Server.VDHCP.SubnetMask
-	log.Printf("✅ 虚拟DHCP已启用: %s - %s", conf.Server.VDHCP.StartIP, conf.Server.VDHCP.EndIP)
+	s.dhcpMask = sconf.VDHCP.SubnetMask
+	log.Printf("✅ 虚拟DHCP已启用: %s - %s", sconf.VDHCP.StartIP, sconf.VDHCP.EndIP)
 
 	// 2 如开启代理则初始化服务端网关/NAT
-	if conf.Server.Proxy {
-		if s.tun, err = tunSetup.NewTUNTunnel(conf.Server.IfName, conf.Server.MTU); err != nil {
-			log.Fatalf("创建服务端TUN失败: %V", err)
+	if sconf.Proxy {
+		if s.tun, err = tunSetup.NewTUNTunnel(sconf.IfName, sconf.MTU); err != nil {
+			log.Fatalf("创建服务端TUN失败: %v", err)
 		}
-		if err = tunSetup.ConfigureTunAddress(conf.Server.IfName, conf.Server.VDHCP.Gateway, conf.Server.VDHCP.SubnetMask); err != nil {
-			log.Fatalf("配置服务端TUN地址失败: %V", err)
+		if err = tunSetup.ConfigureTunAddress(sconf.IfName, sconf.VDHCP.Gateway, sconf.VDHCP.SubnetMask); err != nil {
+			log.Fatalf("配置服务端TUN地址失败: %v", err)
 		}
-		if err = tunSetup.EnableServerGatewayNAT(conf.Server.IfName, conf.Server.VDHCP.Gateway, conf.Server.VDHCP.SubnetMask, conf.Server.EgressIf); err != nil {
-			log.Fatalf("配置服务端NAT失败: %V", err)
+		if err = tunSetup.EnableServerGatewayNAT(sconf.IfName, sconf.VDHCP.Gateway, sconf.VDHCP.SubnetMask, sconf.EgressIf); err != nil {
+			log.Fatalf("配置服务端NAT失败: %v", err)
 		}
 	}
 	// 启动下行分发：服务端 TUN -> 对应客户端。
 	go s.tunToClients()
-	log.Printf("✅ 服务端网关已启用: if=%s gw=%s/%s", conf.Server.IfName, conf.Server.VDHCP.Gateway, conf.Server.VDHCP.SubnetMask)
+	log.Printf("✅ 服务端网关已启用: if=%s gw=%s/%s", sconf.IfName, sconf.VDHCP.Gateway, sconf.VDHCP.SubnetMask)
 
 	// 3) 启动 KCP 监听
-	s.listener, err = net.Listen("tcp", fmt.Sprintf(":%d", conf.Server.Port))
+	s.listener, err = net.Listen("tcp", fmt.Sprintf(":%d", sconf.Port))
 	if err != nil {
 		log.Fatalf("服务端启动失败: %v", err)
 	}
 
-	log.Printf("✅ TCP 服务端启动成功，监听 :%d", conf.Server.Port)
+	log.Printf("✅ TCP 服务端启动成功，监听 :%d", sconf.Port)
 	log.Println("📝 等待客户端连接并转发IP包...")
 
 	for !s.stop.Load() {
@@ -234,10 +236,10 @@ func (s *Server) cleanupClientPeer(peer *ClientPeer) {
 
 func (s *Server) performHandshake(peer *ClientPeer, initMsg []byte) error {
 	// 服务端作为响应方（Responder）完成握手，并拿到对端公钥。
-	if len(conf.Server.Identity.Private) == 0 {
+	if len(sconf.Identity.Private) == 0 {
 		return fmt.Errorf("common.privateKey is required")
 	}
-	hs := secure.NewHandshaker(conf.Server.Identity, nil)
+	hs := secure.NewHandshaker(sconf.Identity, nil)
 	keyID := s.keyID.Add(1)
 	log.Printf("开始处理客户端认证: remote=%s localKeyID=%d", peer.conn.RemoteAddr(), keyID)
 	session, remotePub, err := hs.ResponderHandshake(
@@ -315,7 +317,7 @@ func (s *Server) handleVDHCP(peer *ClientPeer, pkt []byte) {
 		peer.mu.Unlock()
 		return
 	}
-	offer, err := vdhcp.EncodeOffer(ip, s.dhcpMask, conf.Server.VDHCP.Gateway)
+	offer, err := vdhcp.EncodeOffer(ip, s.dhcpMask, sconf.VDHCP.Gateway)
 	if err != nil {
 		return
 	}
@@ -343,7 +345,7 @@ func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {
 		ipHdr.Src.String() != peer.virtualIP ||
 		IsBroadcast(ipHdr.Dst) ||
 		IsMulticast(ipHdr.Dst) ||
-		IsSubnetBroadcast(ipHdr.Dst, conf.Server.VDHCP.Gateway, conf.Server.VDHCP.SubnetMask) {
+		IsSubnetBroadcast(ipHdr.Dst, sconf.VDHCP.Gateway, sconf.VDHCP.SubnetMask) {
 		return
 	}
 

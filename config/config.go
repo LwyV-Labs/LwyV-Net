@@ -21,64 +21,64 @@ const (
 
 var allowedPeerStaticSet map[string]struct{}
 
-func LoadClientConfig(serverIndex int) Config {
+func LoadClientConfig(serverIndex int) ClientConfig {
 	allowedPeerStaticSet = make(map[string]struct{})
-	Conf := Config{}
+	Conf := ClientConfig{}
 	path := clientConfigPath
 	data, err := os.ReadFile(path)
 	if err != nil {
 		log.Fatalf("加载配置文件失败：%v", err)
 	}
-	if err = json.Unmarshal(data, &Conf.Client); err != nil {
+	if err = json.Unmarshal(data, &Conf); err != nil {
 		log.Fatalf("解析配置文件失败：%v", err)
 	}
 	validateClientConfig(&Conf, serverIndex)
 	return Conf
 }
 
-func LoadServerConfig() Config {
+func LoadServerConfig() ServerConfig {
 	allowedPeerStaticSet = make(map[string]struct{})
-	Conf := Config{}
+	Conf := ServerConfig{}
 	path := serverConfigPath
 	data, err := os.ReadFile(path)
 	if err != nil {
 		log.Fatalf("加载配置文件失败：%v", err)
 	}
-	if err = json.Unmarshal(data, &Conf.Server); err != nil {
+	if err = json.Unmarshal(data, &Conf); err != nil {
 		log.Fatalf("解析配置文件失败：%v", err)
 	}
 	validateServerConfig(&Conf)
 	return Conf
 }
 
-func validateClientConfig(conf *Config, serverIndex int) {
-	if len(conf.Client.Servers) == 0 {
+func validateClientConfig(conf *ClientConfig, serverIndex int) {
+	if len(conf.Servers) == 0 {
 		log.Fatalf("client.servers 不能为空")
 	}
-	if serverIndex < 1 || serverIndex > len(conf.Client.Servers) {
-		log.Fatalf("服务端序号无效: %d，合法范围: 1-%d", serverIndex, len(conf.Client.Servers))
+	if serverIndex < 1 || serverIndex > len(conf.Servers) {
+		log.Fatalf("服务端序号无效: %d，合法范围: 1-%d", serverIndex, len(conf.Servers))
 	}
-	selected := conf.Client.Servers[serverIndex-1]
-	conf.Client.SelectedIdx = serverIndex - 1
+	selected := conf.Servers[serverIndex-1]
+	conf.SelectedIdx = serverIndex - 1
 	if strings.TrimSpace(selected.PublicKey) == "" {
 		log.Fatalf("client.servers[%d].publicKey 不能为空", serverIndex-1)
 	}
 	if selected.MTU <= 0 {
 		log.Fatalf("client.servers[%d].mtu 必须大于0", serverIndex-1)
 	}
-	conf.Client.PeerPublicKeys = []string{selected.PublicKey}
-	conf.Client.MTU = selected.MTU
-	fillDerivedFields(&conf.Client.BaseConfig)
+	conf.PeerPublicKeys = []string{selected.PublicKey}
+	conf.MTU = selected.MTU
+	fillDerivedFields(&conf.BaseConfig)
 }
 
-func validateServerConfig(conf *Config) {
-	fillDerivedFields(&conf.Server.BaseConfig)
-	if net.ParseIP(conf.Server.VDHCP.Gateway) == nil {
-		log.Fatalf("非法网关地址: %s", conf.Server.VDHCP.Gateway)
+func validateServerConfig(conf *ServerConfig) {
+	fillDerivedFields(&conf.BaseConfig)
+	if net.ParseIP(conf.VDHCP.Gateway) == nil {
+		log.Fatalf("非法网关地址: %s", conf.VDHCP.Gateway)
 	}
-	if conf.Server.VDHCP.SubnetMask != "" {
-		if _, err := MaskToPrefix(conf.Server.VDHCP.SubnetMask); err != nil {
-			log.Fatalf("非法子网掩码: %s, 错误: %v", conf.Server.VDHCP.SubnetMask, err)
+	if conf.VDHCP.SubnetMask != "" {
+		if _, err := MaskToPrefix(conf.VDHCP.SubnetMask); err != nil {
+			log.Fatalf("非法子网掩码: %s, 错误: %v", conf.VDHCP.SubnetMask, err)
 		}
 	}
 }
@@ -119,15 +119,15 @@ func IsPeerStaticAllowed(remotePub []byte) bool {
 	return ok
 }
 
-func (c Config) SelectedServer() ServerEndpoint {
-	if len(c.Client.Servers) == 0 {
+func (c ClientConfig) SelectedServer() ServerEndpoint {
+	if len(c.Servers) == 0 {
 		return ServerEndpoint{}
 	}
-	idx := c.Client.SelectedIdx
-	if idx < 0 || idx >= len(c.Client.Servers) {
+	idx := c.SelectedIdx
+	if idx < 0 || idx >= len(c.Servers) {
 		idx = 0
 	}
-	return c.Client.Servers[idx]
+	return c.Servers[idx]
 }
 
 func MaskToPrefix(mask string) (int, error) {
