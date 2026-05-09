@@ -42,6 +42,12 @@ func (c *Client) Start(selectIndex int) {
 	if c.tun, err = tunSetup.NewTUNTunnel(cconf.IfName, cconf.Servers[selectIndex].MTU); err != nil {
 		log.Fatalf("创建虚拟网卡失败: %v", err)
 	}
+	// Windows 上当目标别名已存在时，系统可能返回带后缀的新别名（如 “xxx 2”）。
+	// 后续路由/DNS 必须使用真实网卡名，否则会出现“看起来配置成功但流量不进 TUN”。
+	if realIf := c.tun.Name(); realIf != "" && realIf != cconf.IfName {
+		log.Printf("⚠️ TUN网卡名发生重命名: configured=%s actual=%s", cconf.IfName, realIf)
+		cconf.IfName = realIf
+	}
 	if err = tunSetup.AllowTunTraffic(cconf.IfName); err != nil {
 		log.Fatalf("配置TUN策略失败: %v", err)
 	}

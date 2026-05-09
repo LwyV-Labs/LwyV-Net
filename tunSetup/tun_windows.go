@@ -238,11 +238,22 @@ Start-Sleep -Milliseconds 800
 
 $ifIndex = Resolve-InterfaceIndex $ifRef
 
+# Wintun 新建网卡在 Windows 上通常带有很高的接口 metric，
+# 即使添加了 0.0.0.0/0 也可能不会被选中。
+# 这里显式关闭自动 metric 并设置较低值，确保默认路由命中 TUN。
+Set-NetIPInterface -AddressFamily IPv4 -InterfaceIndex $ifIndex -AutomaticMetric Disabled -InterfaceMetric 5 -ErrorAction Stop
+
 Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
     Where-Object { $_.InterfaceIndex -eq $ifIndex } |
     Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
 
-New-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -InterfaceIndex $ifIndex -NextHop $gw -RouteMetric 5 -ErrorAction Stop
+try {
+    New-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -InterfaceIndex $ifIndex -NextHop $gw -RouteMetric 5 -ErrorAction Stop
+} catch {
+    # 某些 Windows 环境下，Wintun 对“经由虚拟网关”的默认路由不会生效，
+    # 需要改为 On-link（NextHop=0.0.0.0）才能真正把流量送入 TUN。
+    New-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -InterfaceIndex $ifIndex -NextHop "0.0.0.0" -RouteMetric 5 -ErrorAction Stop
+}
 `, PsResolveInterfaceIndexFunc(), ifRef, gateway)
 
 	return RunPowerShell(ps)
