@@ -107,7 +107,7 @@ func MaskToPrefix(mask string) (int, error) {
 }
 
 // GenerateAndWriteKeys 生成一组 Noise IK / ECDH 长期身份密钥，并写入配置文件。
-func GenerateAndWriteKeys(path string) (privateKey string, publicKey string, err error) {
+func GenerateAndWriteKeys(path string) (pr string, pu string, err error) {
 	private, public, err := generateNoiseKeyPair()
 	if err != nil {
 		return "", "", err
@@ -118,7 +118,7 @@ func GenerateAndWriteKeys(path string) (privateKey string, publicKey string, err
 	if _, err := secure.ParsePublicKey(public); err != nil {
 		return "", "", err
 	}
-	if err := writeKeysToConfig(path, privateKey); err != nil {
+	if err := writeKeysToConfig(path, private); err != nil {
 		return "", "", err
 	}
 	return private, public, nil
