@@ -73,12 +73,13 @@ $env:CGO_ENABLED=0; $env:GOOS="linux"; $env:GOARCH="amd64";go build -trimpath -b
 
 ## 快速运行
 
-程序默认读取当前目录下的 `config.yaml`。
+程序按启动模式读取当前目录下的配置：服务端读取 `server.yaml`，客户端读取 `client.yaml`。
 
 ### 1) 准备配置
 
 ```bash
-cp build/config.yaml config.yaml
+cp build/server.yaml server.yaml
+cp build/client.yaml client.yaml
 ```
 
 ### 2) 编译
@@ -93,7 +94,7 @@ go build -o build/lwyv-net .
 ./build/lwyv-net genkey
 ```
 
-把输出的 `publicKey` 互相填入对端 `config.yaml` 的 `common.peerPublicKeys`。
+把输出的 `publicKey` 互相填入对端对应配置文件（`server.yaml` 或 `client.yaml`）的 `common.peerPublicKeys`。
 
 ### 4) 启动服务端
 

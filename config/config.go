@@ -52,18 +52,26 @@ type ClientConfig struct {
 type VDHCPConfig struct {
 	StartIP string `yaml:"startIP"`
 	EndIP   string `yaml:"endIP"`
+	SubnetMask string `yaml:"subnetMask"`
 }
 
-const path = "config.yaml"
+const (
+	serverConfigPath = "server.yaml"
+	clientConfigPath = "client.yaml"
+)
 
 var allowedPeerStaticSet map[string]struct{}
 
 // LoadConfig 自动加载配置文件
-func LoadConfig() Config {
+func LoadConfig(mode string) Config {
 	allowedPeerStaticSet = make(map[string]struct{})
 	Conf := Config{}
 
 	// 第一步：把配置文件完整读入内存。
+	path := clientConfigPath
+	if mode == "server" {
+		path = serverConfigPath
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		log.Fatalf("加载配置文件失败：%v", err)
@@ -121,8 +129,10 @@ func LoadConfig() Config {
 	if net.ParseIP(Conf.Common.Gateway) == nil {
 		log.Fatalf("非法网关地址: %s", Conf.Common.Gateway)
 	}
-	if _, err := MaskToPrefix(Conf.Common.SubnetMask); err != nil {
-		log.Fatalf("非法子网掩码: %s, 错误: %v", Conf.Common.SubnetMask, err)
+	if Conf.VDHCP.SubnetMask != "" {
+		if _, err := MaskToPrefix(Conf.VDHCP.SubnetMask); err != nil {
+			log.Fatalf("非法子网掩码: %s, 错误: %v", Conf.VDHCP.SubnetMask, err)
+		}
 	}
 	return Conf
 }

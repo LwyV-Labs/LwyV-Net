@@ -22,7 +22,7 @@ const (
 
 func main() {
 	mode := parseRunMode(os.Args)
-	confs := config.LoadConfig()
+	confs := config.LoadConfig(mode)
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 
@@ -67,7 +67,7 @@ func monitorClientStats(client *vlan.Client, stop <-chan struct{}) {
 	time.Sleep(8 * time.Second)
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-	fmt.Println("\n")
+	fmt.Println()
 	for {
 		select {
 		case <-stop:
