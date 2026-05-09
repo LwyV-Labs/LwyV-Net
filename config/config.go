@@ -4,6 +4,7 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -11,59 +12,65 @@ import (
 	"strings"
 
 	"github.com/LwyV-Labs/LwyV-Net/secure"
-
-	"gopkg.in/yaml.v3"
 )
 
 // Config 总配置结构体（对应整个yaml文件）
 type Config struct {
-	Common CommonConfig `yaml:"common"`
-	Server ServerConfig `yaml:"server"`
-	Client ClientConfig `yaml:"client"`
-	VDHCP  VDHCPConfig  `yaml:"vdhcp"`
+	Common CommonConfig `json:"common"`
+	Server ServerConfig `json:"server"`
+	Client ClientConfig `json:"client"`
+	VDHCP  VDHCPConfig  `json:"vdhcp"`
 }
 
 // CommonConfig 通用配置
 type CommonConfig struct {
-	PrivateKey     string          `yaml:"privateKey"`
-	PeerPublicKeys []string        `yaml:"peerPublicKeys"`
-	Identity       secure.Identity `yaml:"-"`
-	PeerStatic     []byte          `yaml:"-"`
-	MTU            int             `yaml:"mtu"`
-	Proxy          bool            `yaml:"proxy"`
-	Gateway        string          `yaml:"gateway"`
-	SubnetMask     string          `yaml:"subnetMask"`
+	PrivateKey     string          `json:"privateKey"`
+	PeerPublicKeys []string        `json:"peerPublicKeys"`
+	Identity       secure.Identity `json:"-"`
+	PeerStatic     []byte          `json:"-"`
+	MTU            int             `json:"mtu"`
+	Proxy          bool            `json:"proxy"`
+	SubnetMask     string          `json:"subnetMask"`
 }
 
 // ServerConfig 服务端配置
 type ServerConfig struct {
-	Port     int    `yaml:"port"`
-	IfName   string `yaml:"ifName"`
-	EgressIf string `yaml:"egressIf"`
+	Port     int    `json:"port"`
+	IfName   string `json:"ifName"`
+	EgressIf string `json:"egressIf"`
+}
+
+type ServerEndpoint struct {
+	Name      string `json:"name"`
+	ServerIP  string `json:"ip"`
+	PublicKey string `json:"publicKey"`
+	MTU       int    `json:"mtu"`
 }
 
 // ClientConfig 客户端配置
 type ClientConfig struct {
-	IfName   string `yaml:"ifName"`
-	ServerIP string `yaml:"serverIP"`
+	IfName      string           `json:"ifName"`
+	Servers     []ServerEndpoint `json:"servers"`
+	SelectedIdx int              `json:"-"`
 }
 
 // VDHCPConfig 虚拟DHCP配置
 type VDHCPConfig struct {
-	StartIP string `yaml:"startIP"`
-	EndIP   string `yaml:"endIP"`
-	SubnetMask string `yaml:"subnetMask"`
+	StartIP    string `json:"startIP"`
+	EndIP      string `json:"endIP"`
+	SubnetMask string `json:"subnetMask"`
+	Gateway    string `json:"gateway"`
 }
 
 const (
-	serverConfigPath = "server.yaml"
-	clientConfigPath = "client.yaml"
+	serverConfigPath = "server.json"
+	clientConfigPath = "client.json"
 )
 
 var allowedPeerStaticSet map[string]struct{}
 
 // LoadConfig 自动加载配置文件
-func LoadConfig(mode string) Config {
+func LoadConfig(mode string, serverIndex int) Config {
 	allowedPeerStaticSet = make(map[string]struct{})
 	Conf := Config{}
 
@@ -76,8 +83,8 @@ func LoadConfig(mode string) Config {
 	if err != nil {
 		log.Fatalf("加载配置文件失败：%v", err)
 	}
-	// 第二步：将 YAML 反序列化到全局配置结构体 Conf。
-	err = yaml.Unmarshal(data, &Conf)
+	// 第二步：将 JSON 反序列化到全局配置结构体 Conf。
+	err = json.Unmarshal(data, &Conf)
 	if err != nil {
 		log.Fatalf("解析配置文件失败：%v", err)
 	}
@@ -89,15 +96,34 @@ func LoadConfig(mode string) Config {
 		}
 		log.Printf("✅ 检测到 common.privateKey 为空，已自动生成并写入配置文件: %s", path)
 		log.Printf("本机 publicKey: %s", publicKey)
-		log.Printf("请把该 publicKey 填到对端 config.yaml 的 common.peerPublicKeys[0]")
+		log.Printf("请把该 publicKey 填到对端配置的 common.peerPublicKeys[0]")
 		// 回写后重新加载一次配置，确保内存中的 Conf 与磁盘一致。
 		data, err = os.ReadFile(path)
 		if err != nil {
 			log.Fatalf("重新加载配置文件失败：%v", err)
 		}
-		if err = yaml.Unmarshal(data, &Conf); err != nil {
+		if err = json.Unmarshal(data, &Conf); err != nil {
 			log.Fatalf("重新解析配置文件失败：%v", err)
 		}
+	}
+
+	if mode == "client" {
+		if len(Conf.Client.Servers) == 0 {
+			log.Fatalf("client.servers 不能为空")
+		}
+		if serverIndex < 1 || serverIndex > len(Conf.Client.Servers) {
+			log.Fatalf("服务端序号无效: %d，合法范围: 1-%d", serverIndex, len(Conf.Client.Servers))
+		}
+		selected := Conf.Client.Servers[serverIndex-1]
+		Conf.Client.SelectedIdx = serverIndex - 1
+		if strings.TrimSpace(selected.PublicKey) == "" {
+			log.Fatalf("client.servers[%d].publicKey 不能为空", serverIndex-1)
+		}
+		if selected.MTU <= 0 {
+			log.Fatalf("client.servers[%d].mtu 必须大于0", serverIndex-1)
+		}
+		Conf.Common.PeerPublicKeys = []string{selected.PublicKey}
+		Conf.Common.MTU = selected.MTU
 	}
 
 	// 第三步：做字段合法性校验 + 衍生字段填充（例如密钥解析）。
@@ -126,8 +152,8 @@ func LoadConfig(mode string) Config {
 	}
 
 	// 网关、掩码必须能被正确解析。
-	if net.ParseIP(Conf.Common.Gateway) == nil {
-		log.Fatalf("非法网关地址: %s", Conf.Common.Gateway)
+	if mode == "server" && net.ParseIP(Conf.VDHCP.Gateway) == nil {
+		log.Fatalf("非法网关地址: %s", Conf.VDHCP.Gateway)
 	}
 	if Conf.VDHCP.SubnetMask != "" {
 		if _, err := MaskToPrefix(Conf.VDHCP.SubnetMask); err != nil {
@@ -143,6 +169,17 @@ func IsPeerStaticAllowed(remotePub []byte) bool {
 	}
 	_, ok := allowedPeerStaticSet[string(remotePub)]
 	return ok
+}
+
+func (c Config) SelectedServer() ServerEndpoint {
+	if len(c.Client.Servers) == 0 {
+		return ServerEndpoint{}
+	}
+	idx := c.Client.SelectedIdx
+	if idx < 0 || idx >= len(c.Client.Servers) {
+		idx = 0
+	}
+	return c.Client.Servers[idx]
 }
 
 func MaskToPrefix(mask string) (int, error) {
@@ -207,7 +244,7 @@ func writeKeysToConfig(path string, privateKey string, peerPublicKey string) err
 	}
 
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := json.Unmarshal(data, &cfg); err != nil {
 		return fmt.Errorf("解析配置文件失败: %w", err)
 	}
 	if privateKey != "" {
@@ -217,7 +254,7 @@ func writeKeysToConfig(path string, privateKey string, peerPublicKey string) err
 		cfg.Common.PeerPublicKeys = []string{peerPublicKey}
 	}
 
-	out, err := yaml.Marshal(&cfg)
+	out, err := json.MarshalIndent(&cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("编码配置文件失败: %w", err)
 	}

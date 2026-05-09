@@ -22,7 +22,8 @@ const (
 
 func main() {
 	mode := parseRunMode(os.Args)
-	confs := config.LoadConfig(mode)
+	serverIndex := parseServerIndex(os.Args)
+	confs := config.LoadConfig(mode, serverIndex)
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 
@@ -48,6 +49,17 @@ func main() {
 		return
 	}
 
+}
+
+func parseServerIndex(args []string) int {
+	if len(args) < 3 {
+		return 1
+	}
+	var idx int
+	if _, err := fmt.Sscanf(args[2], "%d", &idx); err != nil || idx < 1 {
+		log.Fatalf("服务端序号必须是大于等于1的数字，当前: %s", args[2])
+	}
+	return idx
 }
 
 func parseRunMode(args []string) string {
