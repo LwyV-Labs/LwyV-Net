@@ -247,7 +247,13 @@ Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction Sil
     Where-Object { $_.InterfaceIndex -eq $ifIndex } |
     Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
 
-New-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -InterfaceIndex $ifIndex -NextHop $gw -RouteMetric 5 -ErrorAction Stop
+try {
+    New-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -InterfaceIndex $ifIndex -NextHop $gw -RouteMetric 5 -ErrorAction Stop
+} catch {
+    # 某些 Windows 环境下，Wintun 对“经由虚拟网关”的默认路由不会生效，
+    # 需要改为 On-link（NextHop=0.0.0.0）才能真正把流量送入 TUN。
+    New-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -InterfaceIndex $ifIndex -NextHop "0.0.0.0" -RouteMetric 5 -ErrorAction Stop
+}
 `, PsResolveInterfaceIndexFunc(), ifRef, gateway)
 
 	return RunPowerShell(ps)

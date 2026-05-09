@@ -20,6 +20,7 @@ var ErrTUNTunnelClosed = errors.New("tun tunnel closed")
 // ReadChan() 读出的 pkt 也是独立 copy，不会被下一次 TUN Read 覆盖。
 type TUNTunnel struct {
 	dev tun.Device
+	name string
 
 	batchSize int
 	readBufs  [][]byte
@@ -49,8 +50,11 @@ func NewTUNTunnel(IfName string, mtu int) (*TUNTunnel, error) {
 		readBufs[i] = make([]byte, mtu)
 	}
 
+	realName, _ := dev.Name()
+
 	t := &TUNTunnel{
 		dev:       dev,
+		name:      realName,
 		batchSize: batchSize,
 		readBufs:  readBufs,
 		readSizes: make([]int, batchSize),
@@ -63,6 +67,10 @@ func NewTUNTunnel(IfName string, mtu int) (*TUNTunnel, error) {
 	go t.writeLoop()
 
 	return t, nil
+}
+
+func (t *TUNTunnel) Name() string {
+	return t.name
 }
 
 func (t *TUNTunnel) ReadChan() <-chan []byte {
