@@ -39,7 +39,7 @@ func NewClient(confs config.ClientConfig) *Client {
 func (c *Client) Start(selectIndex int) {
 	// 1) 选择目标服务端配置；2) 创建 TUN 网卡；3) 启动收发循环。
 	var err error
-	if c.tun, err = tunSetup.NewTUNTunnel(cconf.IfName, cconf.MTU); err != nil {
+	if c.tun, err = tunSetup.NewTUNTunnel(cconf.IfName, cconf.Servers[selectIndex].MTU); err != nil {
 		log.Fatalf("创建虚拟网卡失败: %v", err)
 	}
 	if err = tunSetup.AllowTunTraffic(cconf.IfName); err != nil {
@@ -51,6 +51,7 @@ func (c *Client) Start(selectIndex int) {
 		log.Printf("服务端公钥配置错误: servers[%d].publicKey err=%v", selectIndex, err)
 	}
 
+	log.Printf("\n%#v\n", cconf)
 	for !c.stop.Load() {
 		conn, err := net.Dial("tcp", cconf.Servers[selectIndex].ServerIP)
 		if err != nil {

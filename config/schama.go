@@ -30,7 +30,6 @@ type ClientConfig struct {
 	BaseConfig
 	IfName  string           `json:"ifName"`
 	Servers []ServerEndpoint `json:"servers"`
-	MTU     int              `json:"-"`
 }
 
 // VDHCPConfig 虚拟DHCP配置
