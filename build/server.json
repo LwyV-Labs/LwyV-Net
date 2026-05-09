@@ -3,11 +3,11 @@
   "peerPublicKeys": [
     ""
   ],
-  "mtu": 1300,
   "proxy": true,
-  "port": 9999,
+  "mtu": 1300,
   "ifName": "LwyV-Gateway",
   "egressIf": "",
+  "port": 9999,
   "vdhcp": {
     "startIP": "172.19.0.10",
     "endIP": "172.19.0.200",
