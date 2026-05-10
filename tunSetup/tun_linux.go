@@ -144,6 +144,25 @@ func AddDefaultRouteToTun(ifName, gateway string) error {
 	return AddDefaultRoute(ifName, gateway)
 }
 
+func AddSplitDefaultRoutesToTun(ifName, gateway string) error {
+	if err := exec.Command(
+		"ip", "route", "replace",
+		"0.0.0.0/1",
+		"via", gateway,
+		"dev", ifName,
+		"metric", "1",
+	).Run(); err != nil {
+		return err
+	}
+	return exec.Command(
+		"ip", "route", "replace",
+		"128.0.0.0/1",
+		"via", gateway,
+		"dev", ifName,
+		"metric", "1",
+	).Run()
+}
+
 func DeleteDefaultRoute(ifName, gateway string) error {
 	return exec.Command(
 		"ip", "route", "del",
@@ -151,4 +170,20 @@ func DeleteDefaultRoute(ifName, gateway string) error {
 		"via", gateway,
 		"dev", ifName,
 	).Run()
+}
+
+func DeleteSplitDefaultRoutesFromTun(ifName, gateway string) error {
+	_ = exec.Command(
+		"ip", "route", "del",
+		"0.0.0.0/1",
+		"via", gateway,
+		"dev", ifName,
+	).Run()
+	_ = exec.Command(
+		"ip", "route", "del",
+		"128.0.0.0/1",
+		"via", gateway,
+		"dev", ifName,
+	).Run()
+	return nil
 }
