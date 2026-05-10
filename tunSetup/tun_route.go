@@ -85,7 +85,7 @@ func SetupClientProxyRouting(serverAddr, tunIfName, tunGateway string) error {
 
 	log.Printf("✅ 已切换默认路由到TUN: default -> %s dev %s", tunGateway, tunIfName)
 	if err := SetInterfaceDNS(tunIfName, defaultProxyDNS); err != nil {
-		_ = DeleteDefaultRoute(tunIfName, tunGateway)
+		_ = DeleteDefaultRoute(tunIfName)
 		_ = DeleteHostRoute(serverIP, orig.Gateway, origIfRef)
 		return fmt.Errorf("设置TUN DNS失败: %w", err)
 	}
@@ -122,7 +122,7 @@ func CleanupClientProxyRoutingLocked() {
 		origIfRef = clientProxyRoute.origIfIndex
 	}
 
-	if err := DeleteDefaultRoute(clientProxyRoute.tunIfName, clientProxyRoute.tunGateway); err != nil {
+	if err := DeleteDefaultRoute(clientProxyRoute.tunIfName); err != nil {
 		log.Printf("清理TUN默认路由失败: %v", err)
 	} else {
 		log.Printf("🧹 已清理TUN默认路由")

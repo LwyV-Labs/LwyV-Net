@@ -197,19 +197,7 @@ func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr 
 }
 
 func (c *Client) connToTun(conn net.Conn, sessionMgr *secure.SessionManager) {
-	rekeyTicker := time.NewTicker(secure.RekeyInterval)
-	defer rekeyTicker.Stop()
 	for {
-		select {
-		case <-rekeyTicker.C:
-			if err := c.performHandshake(conn, sessionMgr); err != nil {
-				log.Printf("定时密钥切换失败: %v", err)
-				return
-			}
-			log.Printf("✅ 定时密钥切换完成: interval=%s", secure.RekeyInterval)
-			continue
-		default:
-		}
 		frame, err := readFrame(conn)
 		if err != nil {
 			return

@@ -239,17 +239,17 @@ Start-Sleep -Milliseconds 800
 $ifIndex = Resolve-InterfaceIndex $ifRef
 
 # Wintun 网卡经常被分配到较高的自动 metric，先固定一个较低值确保优先级稳定。
-Set-NetIPInterface -AddressFamily IPv4 -InterfaceIndex $ifIndex -AutomaticMetric Disabled -InterfaceMetric 5 -ErrorAction Stop
+Set-NetIPInterface -AddressFamily IPv4 -InterfaceIndex $ifIndex -AutomaticMetric Disabled -InterfaceMetric 1 -ErrorAction Stop
 
 Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
     Where-Object { $_.InterfaceIndex -eq $ifIndex } |
     Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
 
 try {
-    New-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -InterfaceIndex $ifIndex -NextHop $gw -RouteMetric 5 -ErrorAction Stop
+    New-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -InterfaceIndex $ifIndex -NextHop $gw -RouteMetric 1 -ErrorAction Stop
 } catch {
     # 某些 Windows / Wintun 组合上，虚拟网关 next-hop 会失败，回退到 On-link 路由。
-    New-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -InterfaceIndex $ifIndex -NextHop "0.0.0.0" -RouteMetric 5 -ErrorAction Stop
+    New-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -InterfaceIndex $ifIndex -NextHop "0.0.0.0" -RouteMetric 1 -ErrorAction Stop
 }
 `, PsResolveInterfaceIndexFunc(), ifRef, gateway)
 
@@ -280,7 +280,7 @@ New-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -InterfaceIndex 
 	return RunPowerShell(ps)
 }
 
-func DeleteDefaultRoute(ifRef, gateway string) error {
+func DeleteDefaultRoute(ifRef string) error {
 	ps := fmt.Sprintf(`
 %s
 
