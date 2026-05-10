@@ -77,15 +77,16 @@ func SetupClientProxyRouting(serverAddr, tunIfName, tunGateway string) error {
 		origIfRef,
 	)
 
-	// 再把默认路由切到 TUN
-	if err := AddDefaultRouteToTun(tunIfName, tunGateway); err != nil {
+	// 不再改系统 default(0.0.0.0/0)，改为注入两条 /1 分裂默认路由到 TUN，
+	// 依靠最长前缀匹配优先命中，实现“透明接管”且避免与原默认路由 metric 竞争。
+	if err := AddSplitDefaultRoutesToTun(tunIfName, tunGateway); err != nil {
 		_ = DeleteHostRoute(serverIP, orig.Gateway, origIfRef)
-		return fmt.Errorf("切换默认路由到TUN失败: %w", err)
+		return fmt.Errorf("注入TUN分裂默认路由失败: %w", err)
 	}
 
-	log.Printf("✅ 已切换默认路由到TUN: default -> %s dev %s", tunGateway, tunIfName)
+	log.Printf("✅ 已注入TUN分裂默认路由: 0.0.0.0/1,128.0.0.0/1 -> %s dev %s", tunGateway, tunIfName)
 	if err := SetInterfaceDNS(tunIfName, defaultProxyDNS); err != nil {
-		_ = DeleteDefaultRoute(tunIfName)
+		_ = DeleteSplitDefaultRoutesFromTun(tunIfName, tunGateway)
 		_ = DeleteHostRoute(serverIP, orig.Gateway, origIfRef)
 		return fmt.Errorf("设置TUN DNS失败: %w", err)
 	}
@@ -122,10 +123,10 @@ func CleanupClientProxyRoutingLocked() {
 		origIfRef = clientProxyRoute.origIfIndex
 	}
 
-	if err := DeleteDefaultRoute(clientProxyRoute.tunIfName); err != nil {
-		log.Printf("清理TUN默认路由失败: %v", err)
+	if err := DeleteSplitDefaultRoutesFromTun(clientProxyRoute.tunIfName, clientProxyRoute.tunGateway); err != nil {
+		log.Printf("清理TUN分裂默认路由失败: %v", err)
 	} else {
-		log.Printf("🧹 已清理TUN默认路由")
+		log.Printf("🧹 已清理TUN分裂默认路由")
 	}
 	if clientProxyRoute.dnsApplied {
 		if err := ResetInterfaceDNS(clientProxyRoute.tunIfName); err != nil {

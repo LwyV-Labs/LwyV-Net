@@ -256,6 +256,36 @@ try {
 	return RunPowerShell(ps)
 }
 
+func AddSplitDefaultRoutesToTun(ifRef, gateway string) error {
+	ps := fmt.Sprintf(`
+%s
+
+$ifRef = %q
+$gw = %q
+Start-Sleep -Milliseconds 800
+$ifIndex = Resolve-InterfaceIndex $ifRef
+
+# 不改系统 default(0.0.0.0/0)，改为注入两条更长前缀的“分裂默认路由”，
+# 通过最长前缀匹配优先命中 TUN，实现透明接管。
+Set-NetIPInterface -AddressFamily IPv4 -InterfaceIndex $ifIndex -AutomaticMetric Disabled -InterfaceMetric 1 -ErrorAction Stop
+
+$prefixes = @("0.0.0.0/1", "128.0.0.0/1")
+foreach ($p in $prefixes) {
+    Get-NetRoute -AddressFamily IPv4 -DestinationPrefix $p -ErrorAction SilentlyContinue |
+        Where-Object { $_.InterfaceIndex -eq $ifIndex } |
+        Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
+
+    try {
+        New-NetRoute -AddressFamily IPv4 -DestinationPrefix $p -InterfaceIndex $ifIndex -NextHop $gw -RouteMetric 1 -ErrorAction Stop
+    } catch {
+        New-NetRoute -AddressFamily IPv4 -DestinationPrefix $p -InterfaceIndex $ifIndex -NextHop "0.0.0.0" -RouteMetric 1 -ErrorAction Stop
+    }
+}
+`, PsResolveInterfaceIndexFunc(), ifRef, gateway)
+
+	return RunPowerShell(ps)
+}
+
 func AddDefaultRoute(ifRef, gateway string) error {
 	ps := fmt.Sprintf(`
 %s
@@ -292,5 +322,20 @@ Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction Sil
     Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
 `, PsResolveInterfaceIndexFunc(), ifRef)
 
+	return RunPowerShell(ps)
+}
+
+func DeleteSplitDefaultRoutesFromTun(ifRef, gateway string) error {
+	ps := fmt.Sprintf(`
+%s
+$ifRef = %q
+$ifIndex = Resolve-InterfaceIndex $ifRef
+$prefixes = @("0.0.0.0/1", "128.0.0.0/1")
+foreach ($p in $prefixes) {
+    Get-NetRoute -AddressFamily IPv4 -DestinationPrefix $p -ErrorAction SilentlyContinue |
+        Where-Object { $_.InterfaceIndex -eq $ifIndex } |
+        Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
+}
+`, PsResolveInterfaceIndexFunc(), ifRef)
 	return RunPowerShell(ps)
 }
