@@ -123,8 +123,8 @@ func CleanupClientProxyRoutingLocked() {
 		origIfRef = clientProxyRoute.origIfIndex
 	}
 
-	if err := DeleteSplitDefaultRoutesFromTun(clientProxyRoute.tunIfName, clientProxyRoute.tunGateway); err != nil {
-		log.Printf("清理TUN分裂默认路由失败: %v", err)
+	if err := DeleteDefaultRoute(clientProxyRoute.tunIfName, clientProxyRoute.tunGateway); err != nil {
+		log.Printf("清理TUN默认路由失败: %v", err)
 	} else {
 		log.Printf("🧹 已清理TUN分裂默认路由")
 	}

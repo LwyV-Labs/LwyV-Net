@@ -310,7 +310,7 @@ New-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -InterfaceIndex 
 	return RunPowerShell(ps)
 }
 
-func DeleteDefaultRoute(ifRef string) error {
+func DeleteDefaultRoute(ifRef, gateway string) error {
 	ps := fmt.Sprintf(`
 %s
 
