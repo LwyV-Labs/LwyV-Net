@@ -1,6 +1,6 @@
 {
   "privateKey": "7pzPHJheitgGTpkHSsW8ST6Q7/3hWCHknOt+XfvpsOg=",
-  "proxy": true,
+  "proxy": false,
   "ifName": "LwyV-NetAdapter",
   "servers": [
     {
