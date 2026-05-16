@@ -54,16 +54,12 @@ func (c *Client) Start() {
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.mu.Unlock()
 
-	if err := c.initTun(); err != nil {
-		log.Fatalf("客户端 TUN 初始化失败: %v", err)
-	}
 	if err := c.initTransport(); err != nil {
 		log.Fatalf("客户端 tcpx 初始化失败: %v", err)
 	}
 
-	c.wg.Add(2)
+	c.wg.Add(1)
 	go c.runTransport()
-	go c.tunToTCP()
 }
 
 func (c *Client) Stop() {
@@ -94,9 +90,9 @@ func (c *Client) Stop() {
 	log.Printf("客户端已停止")
 }
 
-func (c *Client) initTun() error {
+func (c *Client) initTun(mtu int) error {
 	var err error
-	c.tun, err = tunSetup.NewTUNTunnel(c.conf.IfName, c.conf.MTU)
+	c.tun, err = tunSetup.NewTUNTunnel(c.conf.IfName, mtu)
 	if err != nil {
 		return fmt.Errorf("创建虚拟网卡失败: %w", err)
 	}
@@ -220,6 +216,9 @@ func (c *Client) onTCPMessage(conn *tcpx.SecureConn, raw []byte) {
 		if !c.isReadyConn(conn) {
 			return
 		}
+		if c.tun == nil {
+			return
+		}
 		c.stats.AddDownload(len(payload))
 		if err := c.tun.Write(payload); err != nil {
 			log.Printf("写入 TUN 失败: %v", err)
@@ -252,7 +251,7 @@ func (c *Client) handleVDHCP(conn *tcpx.SecureConn, payload []byte) error {
 		return err
 	}
 
-	if err := c.configureAddress(msg.IP, msg.SubnetMask, msg.Gateway); err != nil {
+	if err := c.configureAddress(msg.IP, msg.SubnetMask, msg.Gateway, msg.MTU); err != nil {
 		return err
 	}
 
@@ -269,7 +268,14 @@ func (c *Client) handleVDHCP(conn *tcpx.SecureConn, payload []byte) error {
 	return nil
 }
 
-func (c *Client) configureAddress(ip, mask, gateway string) error {
+func (c *Client) configureAddress(ip, mask, gateway string, mtu int) error {
+	if c.tun == nil {
+		if err := c.initTun(mtu); err != nil {
+			return fmt.Errorf("创建虚拟网卡失败: %w", err)
+		}
+		c.wg.Add(1)
+		go c.tunToTCP()
+	}
 	if err := tunSetup.ConfigureTunAddress(c.conf.IfName, ip, mask); err != nil {
 		return fmt.Errorf("配置虚拟网卡 IP 失败: %w", err)
 	}
