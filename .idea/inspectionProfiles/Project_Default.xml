@@ -4,6 +4,7 @@
     <inspection_tool class="GoResourceLeak" enabled="true" level="WARNING" enabled_by_default="true">
       <functions>
         <function importPath="golang.zx2c4.com/wireguard/tun" name="CreateTUN" />
+        <function importPath="github.com/LwyV-Labs/LwyV-Net/securetcp" name="NewServer" />
       </functions>
     </inspection_tool>
   </profile>

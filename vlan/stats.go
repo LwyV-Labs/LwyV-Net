@@ -12,7 +12,7 @@ type TrafficStats struct {
 	DownloadBps   float64
 }
 
-type trafficCounter struct {
+type TrafficCounter struct {
 	uploadBytes   atomic.Uint64
 	downloadBytes atomic.Uint64
 	lastUpload    atomic.Uint64
@@ -20,19 +20,19 @@ type trafficCounter struct {
 	lastUnixNano  atomic.Int64
 }
 
-func (t *trafficCounter) addUpload(n int) {
+func (t *TrafficCounter) AddUpload(n int) {
 	if n > 0 {
 		t.uploadBytes.Add(uint64(n))
 	}
 }
 
-func (t *trafficCounter) addDownload(n int) {
+func (t *TrafficCounter) AddDownload(n int) {
 	if n > 0 {
 		t.downloadBytes.Add(uint64(n))
 	}
 }
 
-func (t *trafficCounter) snapshot() TrafficStats {
+func (t *TrafficCounter) Snapshot() TrafficStats {
 	now := time.Now().UnixNano()
 	last := t.lastUnixNano.Load()
 	up := t.uploadBytes.Load()

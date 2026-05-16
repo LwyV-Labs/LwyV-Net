@@ -16,7 +16,7 @@ import (
 )
 
 type ClientPeer struct {
-	stats         trafficCounter
+	stats         TrafficCounter
 	conn          net.Conn
 	mu            sync.Mutex
 	peerPublicKey string
@@ -210,7 +210,7 @@ func (s *Server) peerSendLoop(peer *ClientPeer) {
 			if err != nil {
 				return
 			}
-			peer.stats.addUpload(len(pkt))
+			peer.stats.AddUpload(len(pkt))
 		}
 	}
 }
@@ -333,7 +333,7 @@ func (s *Server) handleVDHCP(peer *ClientPeer, pkt []byte) {
 }
 
 func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {
-	peer.stats.addDownload(len(pkt))
+	peer.stats.AddDownload(len(pkt))
 	// 直接解析二进制IP包，得到IP包头所有信息
 	ipHdr, err := ipv4.ParseHeader(pkt)
 
@@ -396,7 +396,7 @@ func (s *Server) GetTrafficStatsByIP(virtualIP string) (TrafficStats, bool) {
 	if !ok {
 		return TrafficStats{}, false
 	}
-	return peer.stats.snapshot(), true
+	return peer.stats.Snapshot(), true
 }
 
 func (s *Server) GetTrafficStatsByDeviceID(deviceID string) (TrafficStats, bool) {
@@ -404,7 +404,7 @@ func (s *Server) GetTrafficStatsByDeviceID(deviceID string) (TrafficStats, bool)
 	defer s.clientTable.RUnlock()
 	for _, peer := range s.clientTable.m {
 		if peer.deviceID == deviceID {
-			return peer.stats.snapshot(), true
+			return peer.stats.Snapshot(), true
 		}
 	}
 	return TrafficStats{}, false
@@ -415,7 +415,7 @@ func (s *Server) ListPeerTraffic() []PeerTrafficInfo {
 	defer s.clientTable.RUnlock()
 	peers := make([]PeerTrafficInfo, 0, len(s.clientTable.m))
 	for _, peer := range s.clientTable.m {
-		stats := peer.stats.snapshot()
+		stats := peer.stats.Snapshot()
 		peers = append(peers, PeerTrafficInfo{
 			DeviceID:      peer.deviceID,
 			VirtualIP:     peer.virtualIP,

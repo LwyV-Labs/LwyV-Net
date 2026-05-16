@@ -21,7 +21,7 @@ const (
 )
 
 type Client struct {
-	stats trafficCounter
+	stats TrafficCounter
 	// keyID：每次握手递增，用于会话轮转标识。
 	keyID atomic.Uint32
 
@@ -245,7 +245,7 @@ func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr 
 			if err := writeSecureFrame(conn, sessionMgr, PacketTypeIP, pkt); err != nil {
 				return
 			}
-			c.stats.addUpload(len(pkt))
+			c.stats.AddUpload(len(pkt))
 		}
 	}
 }
@@ -285,7 +285,7 @@ func (c *Client) connToTun(conn net.Conn, sessionMgr *secure.SessionManager, agg
 		}
 		//==============================================================
 
-		c.stats.addDownload(len(plain))
+		c.stats.AddDownload(len(plain))
 		if err = c.tun.Write(plain); err != nil {
 			// TUN 写失败通常意味着网卡已关闭或系统层异常。
 			log.Printf("写入TUN失败: %v", err)
@@ -326,7 +326,7 @@ func (c *Client) performHandshake(conn net.Conn, sessionMgr *secure.SessionManag
 }
 
 func (c *Client) GetTrafficStats() TrafficStats {
-	return c.stats.snapshot()
+	return c.stats.Snapshot()
 }
 
 // RandomInterval 生成：基础时间 ± 浮动范围 的随机间隔
