@@ -96,6 +96,7 @@ func (s *Server) initDHCP() error {
 		EndIP:        s.conf.VDHCP.EndIP,
 		SubnetMask:   s.conf.VDHCP.SubnetMask,
 		Gateway:      s.conf.VDHCP.Gateway,
+		DNS:          s.conf.VDHCP.DNS,
 		MTU:          s.conf.MTU,
 		LeaseTTL:     serverLeaseTTL,
 		OfflineGrace: serverOfflineGrace,
@@ -104,7 +105,7 @@ func (s *Server) initDHCP() error {
 		return err
 	}
 	s.dhcp = manager
-	log.Printf("✅ 虚拟 DHCP 已启用: %s - %s", s.conf.VDHCP.StartIP, s.conf.VDHCP.EndIP)
+	log.Printf("✅ 虚拟 DHCP 已启用: %s - %s dns=%v", s.conf.VDHCP.StartIP, s.conf.VDHCP.EndIP, s.conf.VDHCP.DNS)
 	return nil
 }
 
@@ -250,7 +251,7 @@ func (s *Server) handleDHCPDiscover(peer *ClientPeer, msg vdhcp.Message) {
 		_ = peer.write(Pack(TypeVDHCP, nak))
 		return
 	}
-	offer, err := vdhcp.EncodeOffer(msg.RequestID, lease.IP, s.conf.VDHCP.SubnetMask, s.conf.VDHCP.Gateway, s.conf.MTU, serverLeaseTTL)
+	offer, err := vdhcp.EncodeOffer(msg.RequestID, lease.IP, s.conf.VDHCP.SubnetMask, s.conf.VDHCP.Gateway, s.conf.VDHCP.DNS, s.conf.MTU, serverLeaseTTL)
 	if err != nil {
 		return
 	}
@@ -262,7 +263,7 @@ func (s *Server) handleDHCPDiscover(peer *ClientPeer, msg vdhcp.Message) {
 	if oldPeer != nil && oldPeer != peer {
 		oldPeer.close()
 	}
-	log.Printf("DHCP 分配成功: client=%s ip=%s", shortID(peer.clientID()), lease.IP)
+	log.Printf("DHCP 分配成功: client=%s ip=%s dns=%v", shortID(peer.clientID()), lease.IP, s.conf.VDHCP.DNS)
 }
 
 func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {

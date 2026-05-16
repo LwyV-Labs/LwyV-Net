@@ -3,6 +3,7 @@ package vdhcp
 import (
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -21,6 +22,7 @@ type ManagerConfig struct {
 	EndIP        string
 	SubnetMask   string
 	Gateway      string
+	DNS          []string
 	MTU          int
 	LeaseTTL     time.Duration
 	OfflineGrace time.Duration
@@ -54,6 +56,15 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	}
 	if mask == nil {
 		return nil, fmt.Errorf("subnetMask must be valid IPv4 mask")
+	}
+	cfg.DNS = normalizeDNSServers(cfg.DNS)
+	if len(cfg.DNS) == 0 {
+		return nil, fmt.Errorf("dns must contain at least one IPv4 server")
+	}
+	for _, dns := range cfg.DNS {
+		if net.ParseIP(dns).To4() == nil {
+			return nil, fmt.Errorf("dns must be valid IPv4: %s", dns)
+		}
 	}
 	if cfg.LeaseTTL <= 0 {
 		cfg.LeaseTTL = 24 * time.Hour
@@ -214,4 +225,16 @@ func ipToUint32(ip net.IP) uint32 {
 
 func uint32ToIP(v uint32) net.IP {
 	return net.IPv4(byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
+}
+
+func normalizeDNSServers(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, dns := range in {
+		dns = strings.TrimSpace(dns)
+		if dns == "" {
+			continue
+		}
+		out = append(out, dns)
+	}
+	return out
 }

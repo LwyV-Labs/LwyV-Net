@@ -22,10 +22,11 @@ type ServerConfig struct {
 }
 
 type VDHCPConfig struct {
-	StartIP    string `json:"startIP"`
-	EndIP      string `json:"endIP"`
-	SubnetMask string `json:"subnetMask"`
-	Gateway    string `json:"gateway"`
+	StartIP    string   `json:"startIP"`
+	EndIP      string   `json:"endIP"`
+	SubnetMask string   `json:"subnetMask"`
+	Gateway    string   `json:"gateway"`
+	DNS        []string `json:"dns"`
 }
 
 // TransportConfig is optional. A zero value keeps the package defaults.

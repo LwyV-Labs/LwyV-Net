@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
+	"strings"
 	"time"
 )
 
@@ -20,11 +22,12 @@ type Message struct {
 	// RequestID is used to match one request/response pair and reject stale offers.
 	RequestID string `json:"requestId,omitempty"`
 
-	IP           string `json:"ip,omitempty"`
-	SubnetMask   string `json:"subnetMask,omitempty"`
-	Gateway      string `json:"gateway,omitempty"`
-	MTU          int    `json:"mtu,omitempty"`
-	LeaseSeconds int64  `json:"leaseSeconds,omitempty"`
+	IP           string   `json:"ip,omitempty"`
+	SubnetMask   string   `json:"subnetMask,omitempty"`
+	Gateway      string   `json:"gateway,omitempty"`
+	DNS          []string `json:"dns,omitempty"`
+	MTU          int      `json:"mtu,omitempty"`
+	LeaseSeconds int64    `json:"leaseSeconds,omitempty"`
 
 	Reason string `json:"reason,omitempty"`
 }
@@ -43,13 +46,14 @@ func EncodeDiscover() ([]byte, string, error) {
 	return b, reqID, err
 }
 
-func EncodeOffer(reqID, ip, subnetMask, gateway string, mtu int, lease time.Duration) ([]byte, error) {
+func EncodeOffer(reqID, ip, subnetMask, gateway string, dns []string, mtu int, lease time.Duration) ([]byte, error) {
 	return json.Marshal(Message{
 		Type:         MessageTypeOffer,
 		RequestID:    reqID,
 		IP:           ip,
 		SubnetMask:   subnetMask,
 		Gateway:      gateway,
+		DNS:          cloneDNSServers(dns),
 		MTU:          mtu,
 		LeaseSeconds: int64(lease.Seconds()),
 	})
@@ -84,6 +88,15 @@ func ValidateOffer(msg Message, reqID string) error {
 	if msg.IP == "" || msg.SubnetMask == "" || msg.Gateway == "" {
 		return fmt.Errorf("invalid offer: missing ip/subnet/gateway")
 	}
+	if len(msg.DNS) == 0 {
+		return fmt.Errorf("invalid offer: missing dns")
+	}
+	for _, dns := range msg.DNS {
+		dns = strings.TrimSpace(dns)
+		if dns == "" || net.ParseIP(dns).To4() == nil {
+			return fmt.Errorf("invalid offer: bad dns %q", dns)
+		}
+	}
 	if msg.MTU <= 0 {
 		return fmt.Errorf("invalid offer: mtu must be positive")
 	}
@@ -91,4 +104,13 @@ func ValidateOffer(msg Message, reqID string) error {
 		return fmt.Errorf("invalid offer: leaseSeconds must be positive")
 	}
 	return nil
+}
+
+func cloneDNSServers(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
 }

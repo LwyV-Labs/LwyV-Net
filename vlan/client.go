@@ -37,6 +37,7 @@ type clientSession struct {
 	lastIP   string
 	lastMask string
 	lastGW   string
+	lastDNS  []string
 }
 
 func NewClient(conf config.ClientConfig) *Client {
@@ -251,7 +252,7 @@ func (c *Client) handleVDHCP(conn *tcpx.SecureConn, payload []byte) error {
 		return err
 	}
 
-	if err := c.configureAddress(msg.IP, msg.SubnetMask, msg.Gateway, msg.MTU); err != nil {
+	if err := c.configureAddress(msg.IP, msg.SubnetMask, msg.Gateway, msg.DNS, msg.MTU); err != nil {
 		return err
 	}
 
@@ -261,14 +262,15 @@ func (c *Client) handleVDHCP(conn *tcpx.SecureConn, payload []byte) error {
 		c.session.lastIP = msg.IP
 		c.session.lastMask = msg.SubnetMask
 		c.session.lastGW = msg.Gateway
+		c.session.lastDNS = append([]string(nil), msg.DNS...)
 	}
 	c.mu.Unlock()
 
-	log.Printf("✅ 虚拟地址配置成功 ip=%s mask=%s gateway=%s", msg.IP, msg.SubnetMask, msg.Gateway)
+	log.Printf("✅ 虚拟地址配置成功 ip=%s mask=%s gateway=%s dns=%v", msg.IP, msg.SubnetMask, msg.Gateway, msg.DNS)
 	return nil
 }
 
-func (c *Client) configureAddress(ip, mask, gateway string, mtu int) error {
+func (c *Client) configureAddress(ip, mask, gateway string, dns []string, mtu int) error {
 	if c.tun == nil {
 		if err := c.initTun(mtu); err != nil {
 			return fmt.Errorf("创建虚拟网卡失败: %w", err)
@@ -284,7 +286,7 @@ func (c *Client) configureAddress(ip, mask, gateway string, mtu int) error {
 	}
 	// 重连后先清理旧代理路由，避免残留规则与新网关冲突。
 	tunSetup.CleanupClientProxyRouting()
-	if err := tunSetup.SetupClientProxyRouting(c.conf.Server, c.conf.IfName, gateway); err != nil {
+	if err := tunSetup.SetupClientProxyRouting(c.conf.Server, c.conf.IfName, gateway, dns); err != nil {
 		return fmt.Errorf("客户端代理路由初始化失败: %w", err)
 	}
 	return nil

@@ -104,6 +104,10 @@ func applyServerDefaults(conf *ServerConfig) {
 	if conf.VDHCP.Gateway == "" {
 		conf.VDHCP.Gateway = "172.19.0.254"
 	}
+	conf.VDHCP.DNS = normalizeDNSServers(conf.VDHCP.DNS)
+	if len(conf.VDHCP.DNS) == 0 {
+		conf.VDHCP.DNS = defaultDNSServers()
+	}
 }
 
 func validateVDHCP(conf VDHCPConfig) error {
@@ -119,6 +123,14 @@ func validateVDHCP(conf VDHCPConfig) error {
 	if gateway == nil {
 		return fmt.Errorf("非法 vdhcp.gateway: %s", conf.Gateway)
 	}
+	if len(conf.DNS) == 0 {
+		return fmt.Errorf("vdhcp.dns 不能为空")
+	}
+	for _, dns := range conf.DNS {
+		if net.ParseIP(dns).To4() == nil {
+			return fmt.Errorf("非法 vdhcp.dns: %s", dns)
+		}
+	}
 	if ipToUint32(start) > ipToUint32(end) {
 		return fmt.Errorf("vdhcp.startIP 必须小于或等于 vdhcp.endIP")
 	}
@@ -126,6 +138,22 @@ func validateVDHCP(conf VDHCPConfig) error {
 		return fmt.Errorf("非法 vdhcp.subnetMask: %s: %w", conf.SubnetMask, err)
 	}
 	return nil
+}
+
+func defaultDNSServers() []string {
+	return []string{"8.8.8.8", "1.1.1.1"}
+}
+
+func normalizeDNSServers(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, dns := range in {
+		dns = strings.TrimSpace(dns)
+		if dns == "" {
+			continue
+		}
+		out = append(out, dns)
+	}
+	return out
 }
 
 func loadJSON(path string, v any) error {

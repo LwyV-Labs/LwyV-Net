@@ -8,8 +8,6 @@ import (
 	"sync"
 )
 
-var defaultProxyDNS = []string{"8.8.8.8", "1.1.1.1"}
-
 type defaultRouteInfo struct {
 	Gateway string
 	IfName  string
@@ -34,7 +32,7 @@ type clientProxyRouteState struct {
 
 var clientProxyRoute clientProxyRouteState
 
-func SetupClientProxyRouting(serverAddr, tunIfName, tunGateway string) error {
+func SetupClientProxyRouting(serverAddr, tunIfName, tunGateway string, dns []string) error {
 	clientProxyRoute.mu.Lock()
 	defer clientProxyRoute.mu.Unlock()
 
@@ -85,12 +83,16 @@ func SetupClientProxyRouting(serverAddr, tunIfName, tunGateway string) error {
 	}
 
 	log.Printf("✅ 已注入TUN分裂默认路由: 0.0.0.0/1,128.0.0.0/1 -> %s dev %s", tunGateway, tunIfName)
-	if err := SetInterfaceDNS(tunIfName, defaultProxyDNS); err != nil {
-		_ = DeleteSplitDefaultRoutesFromTun(tunIfName, tunGateway)
-		_ = DeleteHostRoute(serverIP, orig.Gateway, origIfRef)
-		return fmt.Errorf("设置TUN DNS失败: %w", err)
+	dnsApplied := false
+	if len(dns) > 0 {
+		if err := SetInterfaceDNS(tunIfName, dns); err != nil {
+			_ = DeleteSplitDefaultRoutesFromTun(tunIfName, tunGateway)
+			_ = DeleteHostRoute(serverIP, orig.Gateway, origIfRef)
+			return fmt.Errorf("设置TUN DNS失败: %w", err)
+		}
+		dnsApplied = true
+		log.Printf("✅ 已设置TUN DNS: if=%s dns=%v", tunIfName, dns)
 	}
-	log.Printf("✅ 已设置TUN DNS: if=%s dns=%v", tunIfName, defaultProxyDNS)
 
 	clientProxyRoute.active = true
 	clientProxyRoute.serverIP = serverIP
@@ -99,7 +101,7 @@ func SetupClientProxyRouting(serverAddr, tunIfName, tunGateway string) error {
 	clientProxyRoute.origIfIndex = orig.IfIndex
 	clientProxyRoute.tunIfName = tunIfName
 	clientProxyRoute.tunGateway = tunGateway
-	clientProxyRoute.dnsApplied = true
+	clientProxyRoute.dnsApplied = dnsApplied
 
 	return nil
 }

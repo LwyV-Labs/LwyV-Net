@@ -47,72 +47,8 @@ go install golang.org/x/mobile/cmd/gobind@latest;
 gomobile clean; 
 gomobile init; 
 New-Item -ItemType Directory -Force build | Out-Null; 
-gomobile bind -v -target android/arm64 -androidapi 23 -o build/lwyvnet.aar -javapkg "com.lwyv.net" ./mobile
+gomobile bind -v -target android -androidapi 23 -o build/lwyvnet.aar -javapkg "com.lwyv.net" ./mobile
 ```
-我想用go封装一个tcp库， 分成服务端和客户端两个部分，
-首先是报文部分，设计一个帧格式，分成四个部分，标识，版本，帧类型，以及长度，版本不匹配直接断开连接，标识不匹配也断开连接，帧类型有心跳帧，加密帧等
-建立连接后，客户端自动ping服务端自动pong可以设置心跳间隔，并且心跳间隔不是固定的，而是可以设置一个基础值和一个随机范围值，心跳间隔会随机防止被检测到是心跳帧，
-客户端服务端都有读写超时，便于检测长时间接收不到心跳就主动断开，实现循环读写指定长度，
-加密部分支持自动加密会话，采样X25519 + AES-GCM + HKDF 的 Noise-IK 风格握手，实现定时自动更换会话密钥原密钥有一个过期时间，连接的时候客户端知道服务端公钥，建立连接后，自动进行加密操作，随后所有的数据交互都是加密后的内容，实现抗重放窗口，
-最后就是客户端支持非主动断开的重连，不要搞多线程重连，确保连接唯一，并且断开连接或者，连接重连成功时可以通知上层。
-在设计成尽量简单易懂，方便打包成库便于安卓kolite语言调用，最后实现一个客户端一个服务端的测试程序。
-
-简单使用示例
-conn, err := securetcp.NewClient(securetcp.ClientConfig{
-Address:             c.conf.Server,
-ClientPrivateKeyB64: c.conf.PrivateKey,
-ServerPublicKeyB64:  c.conf.ServerPublicKey,
-AutoReconnect:       true,
-CommonConfig: securetcp.CommonConfig{
-ReadTimeout:     10 * time.Second,
-WriteTimeout:    8 * time.Second,
-HeartbeatBase:   4 * time.Second,
-HeartbeatJitter: 1 * time.Second,
-RekeyInterval:   45 * time.Second,
-OldKeyGrace:     20 * time.Second,
-},
-OnReconnect: func() {
-c.reconnectInit()
-},
-})	
-srv, err := securetcp.NewServer(securetcp.ServerConfig{
-Address:             fmt.Sprintf(":%d", s.conf.Port),
-ServerPrivateKeyB64: s.conf.PrivateKey,
-CommonConfig: securetcp.CommonConfig{
-ReadTimeout:     60 * time.Second,
-WriteTimeout:    15 * time.Second,
-HeartbeatBase:   10 * time.Second,
-HeartbeatJitter: 5 * time.Second,
-RekeyInterval:   45 * time.Second,
-OldKeyGrace:     30 * time.Second,
-},
-})
-配置文件如下
-client.json
-{
-"privateKey": "7pzPHJheitgGTpkHSsW8ST6Q7/3hWCHknOt+XfvpsOg=",
-"server": "64.83.34.53:443",
-"serverPublicKey": "dfWVua+ZYFhQchiYyhgeYroFquD0bf98zHjG6YYv2kE=",
-"ifName": "LwyV-NetAdapter",
-"mtu": 1300,
-"proxy": true
-}
-server.json
-{
-"privateKey": "Gdgdwua7wo4v6i7/kwAX7AVbM1gT5WEqWukjRAOsh00=",
-"port": 443,
-"ifName": "LwyV-Gateway",
-"mtu": 1300,
-"proxy": true,
-"vdhcp": {
-"startIP": "172.30.0.10",
-"endIP": "172.30.0.200",
-"subnetMask": "255.255.255.0",
-"gateway": "172.30.0.254"
-}
-}
-配置文件读取代码也已给出
-
 
 ## 当前能力（Now）
 

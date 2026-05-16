@@ -62,8 +62,9 @@ type EventListener interface {
 	OnError(message string)
 
 	// Called after vDHCP returns an address.
-	// Kotlin should create VpnService.Builder here and then call AttachTun(fd, mtu).
-	OnAddress(ip string, subnetMask string, gateway string, mtu int64)
+	// dnsServers is a comma-separated IPv4 DNS server list from the server config.
+	// Kotlin should create VpnService.Builder here, add the DNS servers, and then call AttachTun(fd, mtu).
+	OnAddress(ip string, subnetMask string, gateway string, mtu int64, dnsServers string)
 
 	// Called once per second while the client is running.
 	OnTraffic(uploadBytes int64, downloadBytes int64)
@@ -100,6 +101,7 @@ type Client struct {
 	ip               string
 	subnetMask       string
 	gateway          string
+	dnsServers       string
 
 	started      atomic.Bool
 	sessionReady atomic.Bool
@@ -148,8 +150,8 @@ func MaskToPrefix(mask string) (int64, error) {
 // PrivateKey() and persist it, otherwise the client will become a new identity
 // on the next app start and vDHCP will allocate another IP.
 //
-// mtu should normally be your config MTU, for example 1300. If mtu <= 0, 1300 is
-// used.
+// mtu is only a fallback before the vDHCP offer arrives. The server-provided MTU
+// from vDHCP is used for OnAddress and AttachTun.
 func (c *Client) Start(server string, serverPublicKey string, privateKey string, mtu int64, listener EventListener, protector SocketProtector) error {
 	server = strings.TrimSpace(server)
 	serverPublicKey = strings.TrimSpace(serverPublicKey)
@@ -207,6 +209,7 @@ func (c *Client) Start(server string, serverPublicKey string, privateKey string,
 	c.ip = ""
 	c.subnetMask = ""
 	c.gateway = ""
+	c.dnsServers = ""
 	c.tcpxClient = nil
 	c.tun = nil
 	c.uploadBytes.Store(0)
@@ -350,6 +353,7 @@ func (c *Client) Stop() {
 	c.tcpxClient = nil
 	c.tun = nil
 	c.pendingDHCPReqID = ""
+	c.dnsServers = ""
 	c.mu.Unlock()
 
 	if cancel != nil {
@@ -392,6 +396,12 @@ func (c *Client) Gateway() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.gateway
+}
+
+func (c *Client) DNSServers() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.dnsServers
 }
 
 func (c *Client) UploadBytes() int64 {
@@ -523,14 +533,17 @@ func (c *Client) handleVDHCP(conn *tcpx.SecureConn, payload []byte) {
 	c.ip = msg.IP
 	c.subnetMask = msg.SubnetMask
 	c.gateway = msg.Gateway
+	c.dnsServers = strings.Join(msg.DNS, ",")
+	c.mtu = int64(msg.MTU)
 	c.pendingDHCPReqID = ""
 	mtu := c.mtu
+	dnsServers := c.dnsServers
 	listener := c.listener
 	c.mu.Unlock()
 
 	c.sessionReady.Store(true)
 	if listener != nil {
-		listener.OnAddress(msg.IP, msg.SubnetMask, msg.Gateway, mtu)
+		listener.OnAddress(msg.IP, msg.SubnetMask, msg.Gateway, mtu, dnsServers)
 	}
 }
 
