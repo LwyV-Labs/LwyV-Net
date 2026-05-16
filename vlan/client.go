@@ -26,6 +26,8 @@ type Client struct {
 	wg      sync.WaitGroup
 
 	session clientSession
+
+	onVDHCPAssigned VDHCPAssignedCallback
 }
 
 type clientSession struct {
@@ -256,6 +258,7 @@ func (c *Client) handleVDHCP(conn *tcpx.SecureConn, payload []byte) error {
 		return err
 	}
 
+	var assigned VDHCPAssignedInfo
 	c.mu.Lock()
 	if c.session.conn == conn {
 		c.session.ready = true
@@ -263,10 +266,23 @@ func (c *Client) handleVDHCP(conn *tcpx.SecureConn, payload []byte) error {
 		c.session.lastMask = msg.SubnetMask
 		c.session.lastGW = msg.Gateway
 		c.session.lastDNS = append([]string(nil), msg.DNS...)
+		assigned = VDHCPAssignedInfo{
+			ClientID:     c.session.clientID,
+			RemoteAddr:   c.session.remote,
+			IP:           msg.IP,
+			SubnetMask:   msg.SubnetMask,
+			Gateway:      msg.Gateway,
+			DNS:          append([]string(nil), msg.DNS...),
+			MTU:          msg.MTU,
+			LeaseSeconds: msg.LeaseSeconds,
+		}
 	}
 	c.mu.Unlock()
 
 	log.Printf("✅ 虚拟地址配置成功 ip=%s mask=%s gateway=%s dns=%v", msg.IP, msg.SubnetMask, msg.Gateway, msg.DNS)
+	if assigned.IP != "" {
+		c.emitVDHCPAssigned(assigned)
+	}
 	return nil
 }
 

@@ -33,6 +33,9 @@ type Server struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	stop   atomic.Bool
+
+	eventMu         sync.RWMutex
+	onVDHCPAssigned VDHCPAssignedCallback
 }
 
 func NewServer(conf config.ServerConfig) *Server {
@@ -264,6 +267,16 @@ func (s *Server) handleDHCPDiscover(peer *ClientPeer, msg vdhcp.Message) {
 		oldPeer.close()
 	}
 	log.Printf("DHCP 分配成功: client=%s ip=%s dns=%v", shortID(peer.clientID()), lease.IP, s.conf.VDHCP.DNS)
+	s.emitVDHCPAssigned(VDHCPAssignedInfo{
+		ClientID:     peer.clientID(),
+		RemoteAddr:   peer.remoteAddr(),
+		IP:           lease.IP,
+		SubnetMask:   s.conf.VDHCP.SubnetMask,
+		Gateway:      s.conf.VDHCP.Gateway,
+		DNS:          append([]string(nil), s.conf.VDHCP.DNS...),
+		MTU:          s.conf.MTU,
+		LeaseSeconds: int64(serverLeaseTTL.Seconds()),
+	})
 }
 
 func (s *Server) handleIP(peer *ClientPeer, pkt []byte) {
