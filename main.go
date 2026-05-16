@@ -8,9 +8,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/LwyV-Labs/LwyV-Net/conf2"
+	"github.com/LwyV-Labs/LwyV-Net/config"
 	"github.com/LwyV-Labs/LwyV-Net/tcpx"
-	"github.com/LwyV-Labs/LwyV-Net/vlan2"
+	"github.com/LwyV-Labs/LwyV-Net/vlan"
 )
 
 func main() {
@@ -34,7 +34,7 @@ func genKey() {
 }
 
 func runServer() {
-	server := vlan2.NewServer(conf2.LoadServerConfig())
+	server := vlan.NewServer(config.LoadServerConfig())
 	go server.Start()
 
 	stopStats := make(chan struct{})
@@ -46,7 +46,7 @@ func runServer() {
 }
 
 func runClient() {
-	client := vlan2.NewClient(conf2.LoadClientConfig())
+	client := vlan.NewClient(config.LoadClientConfig())
 	client.Start()
 
 	stopStats := make(chan struct{})
@@ -64,7 +64,7 @@ func waitSignal() {
 	<-ch
 }
 
-func monitorClientStats(client *vlan2.Client, stop <-chan struct{}) {
+func monitorClientStats(client *vlan.Client, stop <-chan struct{}) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	fmt.Println()
@@ -85,7 +85,7 @@ func monitorClientStats(client *vlan2.Client, stop <-chan struct{}) {
 	}
 }
 
-func monitorServerStats(server *vlan2.Server, stop <-chan struct{}) {
+func monitorServerStats(server *vlan.Server, stop <-chan struct{}) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {

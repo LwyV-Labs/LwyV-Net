@@ -1,4 +1,4 @@
-package vlan2
+package vlan
 
 import (
 	"context"
@@ -8,10 +8,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/LwyV-Labs/LwyV-Net/conf2"
+	"github.com/LwyV-Labs/LwyV-Net/config"
 	"github.com/LwyV-Labs/LwyV-Net/tcpx"
 	"github.com/LwyV-Labs/LwyV-Net/tunSetup"
-	"github.com/LwyV-Labs/LwyV-Net/vdhcp2"
+	"github.com/LwyV-Labs/LwyV-Net/vdhcp"
 	"golang.org/x/net/ipv4"
 )
 
@@ -22,12 +22,12 @@ const (
 )
 
 type Server struct {
-	conf conf2.ServerConfig
+	conf config.ServerConfig
 
 	peers *peerRegistry
 	tcp   *tcpx.Server
 	tun   *tunSetup.TUNTunnel
-	dhcp  *vdhcp2.Manager
+	dhcp  *vdhcp.Manager
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -35,7 +35,7 @@ type Server struct {
 	stop   atomic.Bool
 }
 
-func NewServer(conf conf2.ServerConfig) *Server {
+func NewServer(conf config.ServerConfig) *Server {
 	return &Server{conf: conf, peers: newPeerRegistry()}
 }
 
@@ -91,7 +91,7 @@ func (s *Server) Stop() {
 }
 
 func (s *Server) initDHCP() error {
-	manager, err := vdhcp2.NewManager(vdhcp2.ManagerConfig{
+	manager, err := vdhcp.NewManager(vdhcp.ManagerConfig{
 		StartIP:      s.conf.VDHCP.StartIP,
 		EndIP:        s.conf.VDHCP.EndIP,
 		SubnetMask:   s.conf.VDHCP.SubnetMask,
@@ -231,26 +231,26 @@ func (s *Server) handleClientAuth(peer *ClientPeer, payload []byte) {
 }
 
 func (s *Server) handleVDHCP(peer *ClientPeer, pkt []byte) {
-	msg, err := vdhcp2.DecodeMessage(pkt)
+	msg, err := vdhcp.DecodeMessage(pkt)
 	if err != nil {
 		log.Printf("无效 VDHCP 消息: client=%s err=%v", shortID(peer.clientID()), err)
 		return
 	}
-	if msg.Type != vdhcp2.MessageTypeDiscover {
+	if msg.Type != vdhcp.MessageTypeDiscover {
 		log.Printf("暂不支持的 VDHCP 类型: client=%s type=%s", shortID(peer.clientID()), msg.Type)
 		return
 	}
 	s.handleDHCPDiscover(peer, msg)
 }
 
-func (s *Server) handleDHCPDiscover(peer *ClientPeer, msg vdhcp2.Message) {
+func (s *Server) handleDHCPDiscover(peer *ClientPeer, msg vdhcp.Message) {
 	lease, err := s.dhcp.Acquire(peer.clientID())
 	if err != nil {
-		nak, _ := vdhcp2.EncodeNak(msg.RequestID, err.Error())
+		nak, _ := vdhcp.EncodeNak(msg.RequestID, err.Error())
 		_ = peer.write(Pack(TypeVDHCP, nak))
 		return
 	}
-	offer, err := vdhcp2.EncodeOffer(msg.RequestID, lease.IP, s.conf.VDHCP.SubnetMask, s.conf.VDHCP.Gateway, serverLeaseTTL)
+	offer, err := vdhcp.EncodeOffer(msg.RequestID, lease.IP, s.conf.VDHCP.SubnetMask, s.conf.VDHCP.Gateway, serverLeaseTTL)
 	if err != nil {
 		return
 	}

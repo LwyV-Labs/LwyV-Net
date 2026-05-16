@@ -1,4 +1,4 @@
-package vlan2
+package vlan
 
 import (
 	"crypto/hmac"

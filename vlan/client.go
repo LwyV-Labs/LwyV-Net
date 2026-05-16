@@ -1,4 +1,4 @@
-package vlan2
+package vlan
 
 import (
 	"context"
@@ -6,15 +6,15 @@ import (
 	"log"
 	"sync"
 
-	"github.com/LwyV-Labs/LwyV-Net/conf2"
+	"github.com/LwyV-Labs/LwyV-Net/config"
 	"github.com/LwyV-Labs/LwyV-Net/tcpx"
 	"github.com/LwyV-Labs/LwyV-Net/tunSetup"
-	"github.com/LwyV-Labs/LwyV-Net/vdhcp2"
+	"github.com/LwyV-Labs/LwyV-Net/vdhcp"
 )
 
 type Client struct {
 	stats TrafficCounter
-	conf  conf2.ClientConfig
+	conf  config.ClientConfig
 
 	tun       *tunSetup.TUNTunnel
 	transport *tcpx.Client
@@ -39,7 +39,7 @@ type clientSession struct {
 	lastGW   string
 }
 
-func NewClient(conf conf2.ClientConfig) *Client {
+func NewClient(conf config.ClientConfig) *Client {
 	return &Client{conf: conf}
 }
 
@@ -156,7 +156,7 @@ func (c *Client) onTCPConnect(conn *tcpx.SecureConn) {
 		return
 	}
 
-	discover, reqID, err := vdhcp2.EncodeDiscover()
+	discover, reqID, err := vdhcp.EncodeDiscover()
 	if err != nil {
 		log.Printf("生成 VDHCP DISCOVER 失败: %v", err)
 		_ = conn.Close()
@@ -233,11 +233,11 @@ func (c *Client) onTCPMessage(conn *tcpx.SecureConn, raw []byte) {
 }
 
 func (c *Client) handleVDHCP(conn *tcpx.SecureConn, payload []byte) error {
-	msg, err := vdhcp2.DecodeMessage(payload)
+	msg, err := vdhcp.DecodeMessage(payload)
 	if err != nil {
 		return err
 	}
-	if msg.Type == vdhcp2.MessageTypeNak {
+	if msg.Type == vdhcp.MessageTypeNak {
 		return fmt.Errorf("VDHCP NAK: %s", msg.Reason)
 	}
 
@@ -248,7 +248,7 @@ func (c *Client) handleVDHCP(conn *tcpx.SecureConn, payload []byte) error {
 	if alreadyReady {
 		return nil
 	}
-	if err := vdhcp2.ValidateOffer(msg, reqID); err != nil {
+	if err := vdhcp.ValidateOffer(msg, reqID); err != nil {
 		return err
 	}
 

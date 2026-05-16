@@ -1,4 +1,4 @@
-package vdhcp2
+package vdhcp
 
 import (
 	"crypto/rand"
