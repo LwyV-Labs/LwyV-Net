@@ -23,6 +23,7 @@ type Message struct {
 	IP           string `json:"ip,omitempty"`
 	SubnetMask   string `json:"subnetMask,omitempty"`
 	Gateway      string `json:"gateway,omitempty"`
+	MTU          int    `json:"mtu,omitempty"`
 	LeaseSeconds int64  `json:"leaseSeconds,omitempty"`
 
 	Reason string `json:"reason,omitempty"`
@@ -42,13 +43,14 @@ func EncodeDiscover() ([]byte, string, error) {
 	return b, reqID, err
 }
 
-func EncodeOffer(reqID, ip, subnetMask, gateway string, lease time.Duration) ([]byte, error) {
+func EncodeOffer(reqID, ip, subnetMask, gateway string, mtu int, lease time.Duration) ([]byte, error) {
 	return json.Marshal(Message{
 		Type:         MessageTypeOffer,
 		RequestID:    reqID,
 		IP:           ip,
 		SubnetMask:   subnetMask,
 		Gateway:      gateway,
+		MTU:          mtu,
 		LeaseSeconds: int64(lease.Seconds()),
 	})
 }
@@ -81,6 +83,9 @@ func ValidateOffer(msg Message, reqID string) error {
 	}
 	if msg.IP == "" || msg.SubnetMask == "" || msg.Gateway == "" {
 		return fmt.Errorf("invalid offer: missing ip/subnet/gateway")
+	}
+	if msg.MTU <= 0 {
+		return fmt.Errorf("invalid offer: mtu must be positive")
 	}
 	if msg.LeaseSeconds <= 0 {
 		return fmt.Errorf("invalid offer: leaseSeconds must be positive")

@@ -250,7 +250,7 @@ func (s *Server) handleDHCPDiscover(peer *ClientPeer, msg vdhcp.Message) {
 		_ = peer.write(Pack(TypeVDHCP, nak))
 		return
 	}
-	offer, err := vdhcp.EncodeOffer(msg.RequestID, lease.IP, s.conf.VDHCP.SubnetMask, s.conf.VDHCP.Gateway, serverLeaseTTL)
+	offer, err := vdhcp.EncodeOffer(msg.RequestID, lease.IP, s.conf.VDHCP.SubnetMask, s.conf.VDHCP.Gateway, s.conf.MTU, serverLeaseTTL)
 	if err != nil {
 		return
 	}
