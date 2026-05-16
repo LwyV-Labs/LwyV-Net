@@ -7,7 +7,6 @@ type ClientConfig struct {
 	Server          string          `json:"server"`
 	ServerPublicKey string          `json:"serverPublicKey"`
 	IfName          string          `json:"ifName"`
-	MTU             int             `json:"mtu"`
 	Proxy           bool            `json:"proxy"`
 	TCP             TransportConfig `json:"tcp,omitempty"`
 }

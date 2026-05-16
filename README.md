@@ -30,13 +30,24 @@ LwyV-Net 的目标不是“复杂的大而全平台”，而是提供一个**可
 - **可扩展架构**：已具备网关/NAT 方向能力，可继续演进策略与控制面。
 
 ---
-### 
+### win打包
 ```bash
-go build -o ./build/lwyvnet.exe main.go main_common.go
+go build -o ./build/lwyvnet.exe main.go
 ```
-### 
+### linux打包
 ```bash
-$env:CGO_ENABLED=0; $env:GOOS="linux";go build -o ./build/lwyvnet-linux-amd64 main.go main_common.go                     
+$env:CGO_ENABLED=0; $env:GOOS="linux";go build -o ./build/lwyvnet-linux-amd64 main.go                 
+```
+
+### android打包aar
+```bash
+go mod tidy; 
+go install golang.org/x/mobile/cmd/gomobile@latest; 
+go install golang.org/x/mobile/cmd/gobind@latest; 
+gomobile clean; 
+gomobile init; 
+New-Item -ItemType Directory -Force build | Out-Null; 
+gomobile bind -v -target android/arm64 -androidapi 23 -o build/lwyvnet.aar -javapkg "com.lwyv.net" ./mobile
 ```
 我想用go封装一个tcp库， 分成服务端和客户端两个部分，
 首先是报文部分，设计一个帧格式，分成四个部分，标识，版本，帧类型，以及长度，版本不匹配直接断开连接，标识不匹配也断开连接，帧类型有心跳帧，加密帧等

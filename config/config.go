@@ -80,9 +80,6 @@ func applyClientDefaults(conf *ClientConfig) {
 	if conf.IfName == "" {
 		conf.IfName = "LwyV-NetAdapter"
 	}
-	if conf.MTU <= 0 {
-		conf.MTU = 1300
-	}
 }
 
 func applyServerDefaults(conf *ServerConfig) {

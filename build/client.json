@@ -1,6 +1,5 @@
 {
   "ifName": "LwyV-NetAdapter",
-  "mtu": 1300,
   "privateKey": "rTYMB6PVk8ALkYMHW2uBkhw3je1ZAg5IbyMRNtIy58o=",
   "proxy": true,
   "server": "64.83.34.53:443",

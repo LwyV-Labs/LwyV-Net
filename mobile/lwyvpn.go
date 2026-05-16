@@ -1,5 +1,3 @@
-//go:build android
-
 // Package mobile is the gomobile-friendly Android wrapper for LwyV-Net.
 //
 // Android/Kotlin owns VpnService and creates the VPN interface. Go owns tcpx,
@@ -23,7 +21,7 @@ import (
 	"time"
 
 	"github.com/LwyV-Labs/LwyV-Net/tcpx"
-	"github.com/LwyV-Labs/LwyV-Net/vdhcp"
+	vdhcp2 "github.com/LwyV-Labs/LwyV-Net/vdhcp"
 )
 
 const (
