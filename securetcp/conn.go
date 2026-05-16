@@ -1,452 +1,447 @@
 package securetcp
 
 import (
-	"bytes"
 	"context"
+	"crypto/ecdh"
+	crand "crypto/rand"
 	"encoding/binary"
-	"errors"
 	"fmt"
-	"io"
+	mrand "math/rand"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-type connRole byte
-
-const (
-	roleClient connRole = 1
-	roleServer connRole = 2
-)
-
-type sessionKeys struct {
-	master     []byte
-	generation uint64
-	send       *cipherState
-	recv       *cipherState
-	sendSeq    uint64
-	recvSeq    uint64
-	expiresAt  time.Time
-}
-
-type pendingRekey struct {
-	id         []byte
-	privateKey []byte
-	baseMaster []byte
-	generation uint64
-}
-
-// Conn is a secure framed TCP connection.
 type Conn struct {
-	nc   net.Conn
-	cfg  Config
-	role connRole
+	netConn net.Conn
+	cfg     CommonConfig
+	role    Role
 
-	writeMu  sync.Mutex
-	keyMu    sync.Mutex
-	current  *sessionKeys
-	previous *sessionKeys
+	peerStaticB64 string
 
-	inbound     chan []byte
-	done        chan struct{}
-	closed      atomic.Bool
-	activeClose atomic.Bool
-	closeOnce   sync.Once
-	closeErr    error
-	closeErrMu  sync.Mutex
+	writeMu sync.Mutex
+	keyMu   sync.RWMutex
+	current *cryptoSession
+	old     map[uint64]*cryptoSession
+
+	pendingMu sync.Mutex
+	pending   map[uint64]*ecdh.PrivateKey
+
+	incoming  chan []byte
+	errCh     chan error
+	done      chan struct{}
+	closeOnce sync.Once
 
 	lastPong atomic.Int64
+	rekeyID  atomic.Uint64
 
-	rekeyMu sync.Mutex
-	pending *pendingRekey
-
-	onClose func(error)
+	allowHeartbeat bool
+	allowRekey     bool
 }
 
-func newConn(nc net.Conn, cfg Config, role connRole, master []byte) (*Conn, error) {
-	keys, err := deriveSessionKeys(master, role, 0)
+func newConn(nc net.Conn, cfg CommonConfig, role Role, hs handshakeResult, allowHeartbeat bool, allowRekey bool) (*Conn, error) {
+	cfg.normalize()
+	sess, err := newCryptoSession(hs.epoch, hs.root, role, cfg.ReplayWindow, time.Time{})
 	if err != nil {
+		_ = nc.Close()
 		return nil, err
 	}
 	c := &Conn{
-		nc:      nc,
-		cfg:     cfg,
-		role:    role,
-		current: keys,
-		inbound: make(chan []byte, cfg.InboundBuffer),
-		done:    make(chan struct{}),
+		netConn:        nc,
+		cfg:            cfg,
+		role:           role,
+		peerStaticB64:  hs.peerStaticB64,
+		current:        sess,
+		old:            make(map[uint64]*cryptoSession),
+		pending:        make(map[uint64]*ecdh.PrivateKey),
+		incoming:       make(chan []byte, 128),
+		errCh:          make(chan error, 1),
+		done:           make(chan struct{}),
+		allowHeartbeat: allowHeartbeat,
+		allowRekey:     allowRekey,
 	}
 	c.lastPong.Store(time.Now().UnixNano())
-	go c.readLoop()
-	if cfg.HeartbeatInterval > 0 {
-		go c.heartbeatLoop()
-	}
-	if cfg.RekeyInterval > 0 {
-		go c.rekeyLoop()
-	}
 	return c, nil
 }
 
-func deriveSessionKeys(master []byte, role connRole, generation uint64) (*sessionKeys, error) {
-	c2s, err := newCipherState(master, fmt.Sprintf("securetcp-v1-c2s-generation-%d", generation))
-	if err != nil {
-		return nil, err
+func (c *Conn) Start() {
+	go c.readLoop()
+	if c.allowHeartbeat {
+		go c.heartbeatLoop()
 	}
-	s2c, err := newCipherState(master, fmt.Sprintf("securetcp-v1-s2c-generation-%d", generation))
-	if err != nil {
-		return nil, err
+	if c.allowRekey {
+		go c.rekeyLoop()
 	}
-	keys := &sessionKeys{master: append([]byte(nil), master...), generation: generation}
-	if role == roleClient {
-		keys.send, keys.recv = c2s, s2c
-	} else {
-		keys.send, keys.recv = s2c, c2s
-	}
-	return keys, nil
 }
 
-// NetConn returns the underlying TCP connection. Avoid direct reads/writes on it.
-func (c *Conn) NetConn() net.Conn { return c.nc }
+func (c *Conn) PeerStaticPublicKeyB64() string { return c.peerStaticB64 }
 
-// Done is closed when the connection is closed.
+func (c *Conn) LocalAddr() net.Addr  { return c.netConn.LocalAddr() }
+func (c *Conn) RemoteAddr() net.Addr { return c.netConn.RemoteAddr() }
+
 func (c *Conn) Done() <-chan struct{} { return c.done }
 
-// IsClosed reports whether the connection has been closed.
-func (c *Conn) IsClosed() bool { return c.closed.Load() }
-
-// ActiveClose reports whether Close was called locally.
-func (c *Conn) ActiveClose() bool { return c.activeClose.Load() }
-
-// CloseError returns the first close error, if any.
-func (c *Conn) CloseError() error {
-	c.closeErrMu.Lock()
-	defer c.closeErrMu.Unlock()
-	return c.closeErr
-}
-
-// ReadMessage returns the next decrypted DATA frame.
-func (c *Conn) ReadMessage() ([]byte, error) {
+func (c *Conn) Err() error {
 	select {
-	case msg, ok := <-c.inbound:
-		if !ok {
-			if err := c.CloseError(); err != nil {
-				return nil, err
-			}
-			return nil, ErrClosed
+	case err := <-c.errCh:
+		if err == nil {
+			return ErrClosed
 		}
-		return msg, nil
-	case <-c.done:
-		if err := c.CloseError(); err != nil {
-			return nil, err
-		}
-		return nil, ErrClosed
+		return err
+	default:
+		return nil
 	}
 }
 
-// ReadMessageContext returns the next decrypted DATA frame or ctx error.
-func (c *Conn) ReadMessageContext(ctx context.Context) ([]byte, error) {
+func (c *Conn) Close() error {
+	var err error
+	c.closeOnce.Do(func() {
+		_ = c.sendEncrypted(FrameClose, []byte("close"))
+		err = c.netConn.Close()
+		close(c.done)
+		close(c.incoming)
+	})
+	return err
+}
+
+func (c *Conn) fail(err error) {
 	select {
-	case msg, ok := <-c.inbound:
+	case c.errCh <- err:
+	default:
+	}
+	c.closeOnce.Do(func() {
+		_ = c.netConn.Close()
+		close(c.done)
+		close(c.incoming)
+	})
+}
+
+func (c *Conn) Write(p []byte) error {
+	select {
+	case <-c.done:
+		return ErrClosed
+	default:
+	}
+	return c.sendEncrypted(FrameData, p)
+}
+
+func (c *Conn) Read(ctx context.Context) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case b, ok := <-c.incoming:
 		if !ok {
-			if err := c.CloseError(); err != nil {
-				return nil, err
-			}
 			return nil, ErrClosed
 		}
-		return msg, nil
+		return b, nil
+	case <-c.done:
+		return nil, ErrClosed
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-c.done:
-		if err := c.CloseError(); err != nil {
-			return nil, err
-		}
-		return nil, ErrClosed
 	}
 }
 
-// WriteMessage sends one encrypted DATA frame.
-func (c *Conn) WriteMessage(p []byte) error {
-	if uint32(len(p)) > c.cfg.MaxFrameSize {
-		return ErrMessageTooLarge
+func (c *Conn) sendEncrypted(typ FrameType, plaintext []byte) error {
+	c.keyMu.RLock()
+	s := c.current
+	if s == nil {
+		c.keyMu.RUnlock()
+		return ErrNoSession
 	}
-	return c.writeEncrypted(FrameData, p)
+	epoch := s.epoch
+	seq := s.sendSeq.Add(1)
+	aead := s.sendAEAD
+	c.keyMu.RUnlock()
+
+	ciphertext := aead.Seal(nil, nonceFor(epoch, seq), plaintext, aadFor(typ, epoch, seq))
+	payload := make([]byte, 16+len(ciphertext))
+	binary.BigEndian.PutUint64(payload[0:8], epoch)
+	binary.BigEndian.PutUint64(payload[8:16], seq)
+	copy(payload[16:], ciphertext)
+
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return writeFrame(c.netConn, c.cfg, typ, payload)
 }
 
-// Close actively closes the secure connection.
-func (c *Conn) Close() error {
-	c.activeClose.Store(true)
-	if !c.closed.Load() {
-		_ = c.writeEncrypted(FrameClose, nil)
-	}
-	c.closeWithError(ErrClosed)
-	return nil
+func aadFor(typ FrameType, epoch, seq uint64) []byte {
+	var aad [17]byte
+	aad[0] = byte(typ)
+	binary.BigEndian.PutUint64(aad[1:9], epoch)
+	binary.BigEndian.PutUint64(aad[9:17], seq)
+	return aad[:]
 }
 
-func (c *Conn) closeWithError(err error) {
-	c.closeOnce.Do(func() {
-		c.closed.Store(true)
-		c.closeErrMu.Lock()
-		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-			c.closeErr = err
+func (c *Conn) decryptPayload(typ FrameType, payload []byte) ([]byte, error) {
+	if len(payload) < 16 {
+		return nil, fmt.Errorf("short encrypted payload")
+	}
+	epoch := binary.BigEndian.Uint64(payload[0:8])
+	seq := binary.BigEndian.Uint64(payload[8:16])
+	ciphertext := payload[16:]
+
+	c.keyMu.RLock()
+	s := c.current
+	if s == nil || s.epoch != epoch {
+		s = c.old[epoch]
+		if s != nil && !s.expiresAt.IsZero() && time.Now().After(s.expiresAt) {
+			s = nil
 		}
-		c.closeErrMu.Unlock()
-		_ = c.nc.Close()
-		close(c.done)
-		close(c.inbound)
-		if c.onClose != nil {
-			c.onClose(err)
-		}
-	})
+	}
+	if s == nil {
+		c.keyMu.RUnlock()
+		return nil, fmt.Errorf("unknown crypto epoch %d", epoch)
+	}
+	aead := s.recvAEAD
+	c.keyMu.RUnlock()
+
+	plaintext, err := aead.Open(nil, nonceFor(epoch, seq), ciphertext, aadFor(typ, epoch, seq))
+	if err != nil {
+		return nil, err
+	}
+	if !s.replay.CheckAndMark(seq) {
+		return nil, ErrReplay
+	}
+	return plaintext, nil
 }
 
 func (c *Conn) readLoop() {
 	for {
-		typ, payload, header, err := readRawFrame(c.nc, c.cfg)
+		typ, payload, err := readFrame(c.netConn, c.cfg)
 		if err != nil {
-			c.closeWithError(err)
-			return
-		}
-		plain, err := c.decryptFrame(header[:], payload)
-		if err != nil {
-			c.closeWithError(err)
+			c.fail(err)
 			return
 		}
 		switch typ {
 		case FrameData:
+			pt, err := c.decryptPayload(typ, payload)
+			if err != nil {
+				c.fail(err)
+				return
+			}
 			select {
-			case c.inbound <- plain:
+			case c.incoming <- pt:
 			case <-c.done:
 				return
 			}
 		case FramePing:
-			_ = c.writeEncrypted(FramePong, plain)
+			pt, err := c.decryptPayload(typ, payload)
+			if err != nil {
+				c.fail(err)
+				return
+			}
+			if c.role == RoleServer {
+				_ = c.sendEncrypted(FramePong, pt)
+			}
 		case FramePong:
+			_, err := c.decryptPayload(typ, payload)
+			if err != nil {
+				c.fail(err)
+				return
+			}
 			c.lastPong.Store(time.Now().UnixNano())
+		case FrameRekeyReq:
+			pt, err := c.decryptPayload(typ, payload)
+			if err != nil {
+				c.fail(err)
+				return
+			}
+			if err := c.handleRekeyRequest(pt); err != nil {
+				c.fail(err)
+				return
+			}
+		case FrameRekeyRes:
+			pt, err := c.decryptPayload(typ, payload)
+			if err != nil {
+				c.fail(err)
+				return
+			}
+			if err := c.handleRekeyResponse(pt); err != nil {
+				c.fail(err)
+				return
+			}
 		case FrameClose:
-			c.closeWithError(ErrClosed)
-			return
-		case FrameRekey1:
-			if err := c.handleRekey1(plain); err != nil {
-				c.closeWithError(err)
-				return
-			}
-		case FrameRekey2:
-			if err := c.handleRekey2(plain); err != nil {
-				c.closeWithError(err)
-				return
-			}
-		case FrameError:
-			c.closeWithError(fmt.Errorf("securetcp peer error: %s", string(plain)))
+			_, _ = c.decryptPayload(typ, payload)
+			c.fail(ErrClosed)
 			return
 		default:
-			c.closeWithError(fmt.Errorf("%w: unsupported encrypted frame %s", ErrBadFrame, typ))
+			c.fail(fmt.Errorf("unknown frame type 0x%x", typ))
 			return
 		}
 	}
 }
 
 func (c *Conn) heartbeatLoop() {
-	ticker := time.NewTicker(c.cfg.HeartbeatInterval)
-	defer ticker.Stop()
 	for {
+		interval := jittered(c.cfg.HeartbeatBase, c.cfg.HeartbeatJitter)
 		select {
-		case <-ticker.C:
-			if c.cfg.HeartbeatTimeout > 0 {
-				last := time.Unix(0, c.lastPong.Load())
-				if time.Since(last) > c.cfg.HeartbeatTimeout {
-					c.closeWithError(fmt.Errorf("securetcp: heartbeat timeout"))
-					return
-				}
-			}
-			var b [8]byte
-			binary.BigEndian.PutUint64(b[:], uint64(time.Now().UnixNano()))
-			if err := c.writeEncrypted(FramePing, b[:]); err != nil {
-				c.closeWithError(err)
-				return
-			}
+		case <-time.After(interval):
 		case <-c.done:
 			return
 		}
+		now := time.Now()
+		last := time.Unix(0, c.lastPong.Load())
+		// Allow at least two heartbeat periods before declaring the peer dead.
+		maxSilent := 2*c.cfg.HeartbeatBase + c.cfg.HeartbeatJitter + c.cfg.ReadTimeout/2
+		if maxSilent < c.cfg.ReadTimeout {
+			maxSilent = c.cfg.ReadTimeout
+		}
+		if now.Sub(last) > maxSilent {
+			c.fail(fmt.Errorf("heartbeat timeout: last pong %s ago", now.Sub(last)))
+			return
+		}
+		ping, err := randBytes(16)
+		if err != nil {
+			continue
+		}
+		if err := c.sendEncrypted(FramePing, ping); err != nil {
+			c.fail(err)
+			return
+		}
 	}
+}
+
+func jittered(base, jitter time.Duration) time.Duration {
+	if jitter <= 0 {
+		return base
+	}
+	// math/rand is enough for timing jitter; cryptographic randomness is not required here.
+	delta := time.Duration(mrand.Int63n(int64(jitter)*2+1)) - jitter
+	v := base + delta
+	if v < time.Second {
+		return time.Second
+	}
+	return v
 }
 
 func (c *Conn) rekeyLoop() {
-	ticker := time.NewTicker(c.cfg.RekeyInterval)
-	defer ticker.Stop()
 	for {
+		interval := c.cfg.RekeyInterval
 		select {
-		case <-ticker.C:
-			_ = c.InitiateRekey()
+		case <-time.After(interval):
 		case <-c.done:
 			return
 		}
+		_ = c.InitiateRekey()
 	}
 }
 
-// InitiateRekey starts an encrypted in-band key rotation.
 func (c *Conn) InitiateRekey() error {
-	if c.closed.Load() {
-		return ErrClosed
-	}
-	id, err := randomBytes(16)
+	eph, err := ecdh.X25519().GenerateKey(crand.Reader)
 	if err != nil {
 		return err
 	}
-	eph, err := GenerateKeyPair()
-	if err != nil {
+	id := c.rekeyID.Add(1)
+	payload := make([]byte, 8+32)
+	binary.BigEndian.PutUint64(payload[:8], id)
+	copy(payload[8:], eph.PublicKey().Bytes())
+
+	c.pendingMu.Lock()
+	c.pending[id] = eph
+	c.pendingMu.Unlock()
+
+	if err := c.sendEncrypted(FrameRekeyReq, payload); err != nil {
+		c.pendingMu.Lock()
+		delete(c.pending, id)
+		c.pendingMu.Unlock()
 		return err
 	}
-	c.rekeyMu.Lock()
-	if c.pending != nil {
-		c.rekeyMu.Unlock()
-		return nil
-	}
-	c.keyMu.Lock()
-	baseMaster := append([]byte(nil), c.current.master...)
-	generation := c.current.generation
-	c.keyMu.Unlock()
-	c.pending = &pendingRekey{id: id, privateKey: eph.Private, baseMaster: baseMaster, generation: generation}
-	c.rekeyMu.Unlock()
-	payload := bytes.Join([][]byte{id, eph.Public}, nil)
-	return c.writeEncrypted(FrameRekey1, payload)
+	return nil
 }
 
-func (c *Conn) handleRekey1(payload []byte) error {
-	if len(payload) != 16+x25519PublicKeySize {
-		return fmt.Errorf("%w: bad REKEY1", ErrBadFrame)
+func (c *Conn) handleRekeyRequest(pt []byte) error {
+	if len(pt) != 40 {
+		return fmt.Errorf("bad rekey request size %d", len(pt))
 	}
-	peerID := append([]byte(nil), payload[:16]...)
-	peerPub := append([]byte(nil), payload[16:]...)
-
-	c.rekeyMu.Lock()
-	if c.pending != nil {
-		cmp := bytes.Compare(c.pending.id, peerID)
-		if cmp < 0 {
-			// Local lower id wins. The peer should cancel its pending rekey and answer ours.
-			c.rekeyMu.Unlock()
-			return nil
-		}
-		// Peer lower id wins. Cancel local pending and respond to peer.
-		c.pending = nil
-	}
-	c.rekeyMu.Unlock()
-
-	eph, err := GenerateKeyPair()
+	id := binary.BigEndian.Uint64(pt[:8])
+	peerPub, err := ecdh.X25519().NewPublicKey(pt[8:])
 	if err != nil {
 		return err
 	}
-	shared, err := ecdhShared(eph.Private, peerPub)
+	eph, err := ecdh.X25519().GenerateKey(crand.Reader)
+	if err != nil {
+		return err
+	}
+	shared, err := eph.ECDH(peerPub)
+	if err != nil {
+		return err
+	}
+
+	newRoot, newEpoch, err := c.deriveNextRootAndEpoch(shared, id)
+	if err != nil {
+		return err
+	}
+
+	resp := make([]byte, 8+32)
+	binary.BigEndian.PutUint64(resp[:8], id)
+	copy(resp[8:], eph.PublicKey().Bytes())
+	// Response must be encrypted with the old/current key so the initiator can read it.
+	if err := c.sendEncrypted(FrameRekeyRes, resp); err != nil {
+		return err
+	}
+	return c.installSession(newEpoch, newRoot)
+}
+
+func (c *Conn) handleRekeyResponse(pt []byte) error {
+	if len(pt) != 40 {
+		return fmt.Errorf("bad rekey response size %d", len(pt))
+	}
+	id := binary.BigEndian.Uint64(pt[:8])
+	peerPub, err := ecdh.X25519().NewPublicKey(pt[8:])
+	if err != nil {
+		return err
+	}
+	c.pendingMu.Lock()
+	eph := c.pending[id]
+	delete(c.pending, id)
+	c.pendingMu.Unlock()
+	if eph == nil {
+		return fmt.Errorf("unknown rekey id %d", id)
+	}
+	shared, err := eph.ECDH(peerPub)
+	if err != nil {
+		return err
+	}
+	newRoot, newEpoch, err := c.deriveNextRootAndEpoch(shared, id)
+	if err != nil {
+		return err
+	}
+	return c.installSession(newEpoch, newRoot)
+}
+
+func (c *Conn) deriveNextRootAndEpoch(shared []byte, id uint64) ([]byte, uint64, error) {
+	c.keyMu.RLock()
+	cur := c.current
+	if cur == nil {
+		c.keyMu.RUnlock()
+		return nil, 0, ErrNoSession
+	}
+	oldRoot := append([]byte(nil), cur.root...)
+	newEpoch := cur.epoch + 1
+	c.keyMu.RUnlock()
+	info := appendAll([]byte("securetcp-rekey-root"), encodeU64(id), encodeU64(newEpoch))
+	newRoot := hkdfSHA256(oldRoot, shared, info, 32)
+	return newRoot, newEpoch, nil
+}
+
+func (c *Conn) installSession(epoch uint64, root []byte) error {
+	newSess, err := newCryptoSession(epoch, root, c.role, c.cfg.ReplayWindow, time.Time{})
 	if err != nil {
 		return err
 	}
 	c.keyMu.Lock()
-	baseMaster := append([]byte(nil), c.current.master...)
-	generation := c.current.generation
-	c.keyMu.Unlock()
-
-	resp := bytes.Join([][]byte{peerID, eph.Public}, nil)
-	// Important: reply is encrypted under the old current key. Then both sides switch.
-	if err := c.writeEncrypted(FrameRekey2, resp); err != nil {
-		return err
-	}
-	newMaster := hkdf(nil, bytes.Join([][]byte{baseMaster, shared, peerID}, nil), "securetcp-v1-rekey-master", 32)
-	return c.installKeys(newMaster, generation+1)
-}
-
-func (c *Conn) handleRekey2(payload []byte) error {
-	if len(payload) != 16+x25519PublicKeySize {
-		return fmt.Errorf("%w: bad REKEY2", ErrBadFrame)
-	}
-	id := append([]byte(nil), payload[:16]...)
-	peerPub := append([]byte(nil), payload[16:]...)
-	c.rekeyMu.Lock()
-	pending := c.pending
-	if pending == nil || !bytes.Equal(pending.id, id) {
-		c.rekeyMu.Unlock()
-		return nil
-	}
-	c.pending = nil
-	c.rekeyMu.Unlock()
-	shared, err := ecdhShared(pending.privateKey, peerPub)
-	if err != nil {
-		return err
-	}
-	newMaster := hkdf(nil, bytes.Join([][]byte{pending.baseMaster, shared, pending.id}, nil), "securetcp-v1-rekey-master", 32)
-	return c.installKeys(newMaster, pending.generation+1)
-}
-
-func (c *Conn) installKeys(master []byte, generation uint64) error {
-	newKeys, err := deriveSessionKeys(master, c.role, generation)
-	if err != nil {
-		return err
-	}
-	c.keyMu.Lock()
-	defer c.keyMu.Unlock()
 	if c.current != nil {
 		c.current.expiresAt = time.Now().Add(c.cfg.OldKeyGrace)
-		c.previous = c.current
+		c.old[c.current.epoch] = c.current
 	}
-	c.current = newKeys
-	return nil
-}
-
-func (c *Conn) writeEncrypted(typ FrameType, plaintext []byte) error {
-	if c.closed.Load() {
-		return ErrClosed
+	for ep, s := range c.old {
+		if !s.expiresAt.IsZero() && time.Now().After(s.expiresAt) {
+			delete(c.old, ep)
+		}
 	}
-	if uint32(len(plaintext)) > c.cfg.MaxFrameSize {
-		return ErrMessageTooLarge
-	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-
-	c.keyMu.Lock()
-	keys := c.current
-	seq := keys.sendSeq
-	keys.sendSeq++
-	cipherLen := uint32(len(plaintext) + keys.send.aead.Overhead())
-	header := encodeHeader(c.cfg.Magic, typ, cipherLen)
-	ciphertext := keys.send.seal(seq, header[:], plaintext)
+	c.current = newSess
 	c.keyMu.Unlock()
-
-	if c.cfg.WriteTimeout > 0 {
-		_ = c.nc.SetWriteDeadline(time.Now().Add(c.cfg.WriteTimeout))
-	}
-	if _, err := c.nc.Write(header[:]); err != nil {
-		return err
-	}
-	written := 0
-	for written < len(ciphertext) {
-		if c.cfg.WriteTimeout > 0 {
-			_ = c.nc.SetWriteDeadline(time.Now().Add(c.cfg.WriteTimeout))
-		}
-		n, err := c.nc.Write(ciphertext[written:])
-		if err != nil {
-			return err
-		}
-		written += n
-	}
 	return nil
-}
-
-func (c *Conn) decryptFrame(header []byte, ciphertext []byte) ([]byte, error) {
-	c.keyMu.Lock()
-	defer c.keyMu.Unlock()
-	if c.current == nil {
-		return nil, ErrClosed
-	}
-	plain, err := c.current.recv.open(c.current.recvSeq, header, ciphertext)
-	if err == nil {
-		c.current.recvSeq++
-		return plain, nil
-	}
-	if c.previous != nil && time.Now().Before(c.previous.expiresAt) {
-		plain, oldErr := c.previous.recv.open(c.previous.recvSeq, header, ciphertext)
-		if oldErr == nil {
-			c.previous.recvSeq++
-			return plain, nil
-		}
-	}
-	return nil, fmt.Errorf("securetcp: decrypt frame failed: %w", err)
 }

@@ -2,122 +2,123 @@ package securetcp
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 )
 
-func TestEchoAndRekey(t *testing.T) {
-	serverKP, err := GenerateKeyPair()
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv, err := Listen("127.0.0.1:0", Config{
-		ServerStaticPrivateKey: serverKP.Private,
-		AllowResume:            true,
-		HeartbeatInterval:      time.Second,
-		HeartbeatTimeout:       5 * time.Second,
-		RekeyInterval:          time.Hour,
-	}, func(c *Conn) {
-		for {
-			msg, err := c.ReadMessage()
-			if err != nil {
-				return
-			}
-			_ = c.WriteMessage(append([]byte("echo:"), msg...))
-		}
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer srv.Close()
+func TestFrameReadWrite(t *testing.T) {
+	cfg := CommonConfig{ReadTimeout: time.Second, WriteTimeout: time.Second}
+	cfg.normalize()
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
 
-	client, err := NewClient(srv.Addr().String(), Config{
-		ServerStaticPublicKey: serverKP.Public,
-		AllowResume:           true,
-		HeartbeatInterval:     time.Second,
-		HeartbeatTimeout:      5 * time.Second,
-		RekeyInterval:         time.Hour,
-	})
+	go func() {
+		_ = writeFrame(a, cfg, FrameData, []byte("abc"))
+	}()
+	typ, payload, err := readFrame(b, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, err := client.Connect(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-
-	if err := conn.WriteMessage([]byte("hello")); err != nil {
-		t.Fatal(err)
-	}
-	msg, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(msg) != "echo:hello" {
-		t.Fatalf("unexpected echo: %q", msg)
-	}
-	if err := conn.InitiateRekey(); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(100 * time.Millisecond)
-	if err := conn.WriteMessage([]byte("after")); err != nil {
-		t.Fatal(err)
-	}
-	msg, err = conn.ReadMessage()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(msg) != "echo:after" {
-		t.Fatalf("unexpected echo after rekey: %q", msg)
+	if typ != FrameData || string(payload) != "abc" {
+		t.Fatalf("got typ=%v payload=%q", typ, payload)
 	}
 }
 
-func TestResume(t *testing.T) {
+func TestSecureConnOverPipe(t *testing.T) {
 	serverKP, err := GenerateKeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := Listen("127.0.0.1:0", Config{
-		ServerStaticPrivateKey: serverKP.Private,
-		AllowResume:            true,
-		RekeyInterval:          time.Hour,
-	}, func(c *Conn) {
-		for {
-			msg, err := c.ReadMessage()
-			if err != nil {
-				return
-			}
-			_ = c.WriteMessage(msg)
-		}
-	})
+	clientKP, err := GenerateKeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srv.Close()
 
-	client, err := NewClient(srv.Addr().String(), Config{ServerStaticPublicKey: serverKP.Public, AllowResume: true, RekeyInterval: time.Hour})
+	serverPriv, err := parsePrivateKeyB64(serverKP.PrivateKeyB64)
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn1, err := client.Connect(context.Background())
+	clientPriv, err := parsePrivateKeyB64(clientKP.PrivateKeyB64)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = conn1.Close()
-	conn2, err := client.Connect(context.Background())
+	serverPub, err := parsePublicKeyB64(serverKP.PublicKeyB64)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn2.Close()
-	if err := conn2.WriteMessage([]byte("resumed")); err != nil {
-		t.Fatal(err)
+
+	cfg := CommonConfig{
+		ReadTimeout:   2 * time.Second,
+		WriteTimeout:  2 * time.Second,
+		HeartbeatBase: time.Hour,
+		RekeyInterval: time.Hour,
 	}
-	msg, err := conn2.ReadMessage()
+	cfg.normalize()
+
+	clientRaw, serverRaw := net.Pipe()
+	defer clientRaw.Close()
+	defer serverRaw.Close()
+
+	serverReady := make(chan *Conn, 1)
+	serverErr := make(chan error, 1)
+	go func() {
+		hs, err := serverHandshake(serverRaw, cfg, serverPriv)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		sc, err := newConn(serverRaw, cfg, RoleServer, hs, false, false)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		sc.Start()
+		serverReady <- sc
+	}()
+
+	hs, err := clientHandshake(clientRaw, cfg, clientPriv, serverPub)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(msg) != "resumed" {
-		t.Fatalf("unexpected msg: %q", msg)
+	cc, err := newConn(clientRaw, cfg, RoleClient, hs, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cc.Start()
+
+	var sc *Conn
+	select {
+	case sc = <-serverReady:
+	case err := <-serverErr:
+		t.Fatal(err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("server handshake timeout")
+	}
+	defer cc.Close()
+	defer sc.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := cc.Write([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	msg, err := sc.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(msg) != "hello" {
+		t.Fatalf("server read %q", msg)
+	}
+	if err := sc.Write([]byte("world")); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := cc.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(reply) != "world" {
+		t.Fatalf("client read %q", reply)
 	}
 }

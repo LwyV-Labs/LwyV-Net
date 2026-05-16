@@ -2,161 +2,212 @@ package securetcp
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"time"
 )
 
-// Client manages client-side dialing, optional session resumption and optional reconnect.
 type Client struct {
-	addr string
-	cfg  Config
+	cfg ClientConfig
 
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	conn   *Conn
-	ticket *SessionTicket
 	closed bool
 }
 
-func NewClient(addr string, cfg Config) (*Client, error) {
-	if err := cfg.NormalizeClient(); err != nil {
+func NewClient(cfg ClientConfig) (*Client, error) {
+	cfg.normalize()
+	if cfg.Address == "" {
+		return nil, fmt.Errorf("client address is required")
+	}
+	if cfg.ClientPrivateKeyB64 == "" {
+		return nil, fmt.Errorf("client private key is required")
+	}
+	if cfg.ServerPublicKeyB64 == "" {
+		return nil, fmt.Errorf("server public key is required")
+	}
+	if _, err := parsePrivateKeyB64(cfg.ClientPrivateKeyB64); err != nil {
 		return nil, err
 	}
-	return &Client{addr: addr, cfg: cfg}, nil
+	if _, err := parsePublicKeyB64(cfg.ServerPublicKeyB64); err != nil {
+		return nil, err
+	}
+	return &Client{cfg: cfg}, nil
 }
 
-func (c *Client) CurrentConn() *Conn {
+func (c *Client) Connect(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	conn, err := c.connectOnce(ctx)
+	if err != nil {
+		return err
+	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	if c.closed {
+		c.mu.Unlock()
+		_ = conn.Close()
+		return ErrClosed
+	}
+	old := c.conn
+	c.conn = conn
+	c.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+	return nil
+}
+
+func (c *Client) connectOnce(ctx context.Context) (*Conn, error) {
+	priv, err := parsePrivateKeyB64(c.cfg.ClientPrivateKeyB64)
+	if err != nil {
+		return nil, err
+	}
+	serverPub, err := parsePublicKeyB64(c.cfg.ServerPublicKeyB64)
+	if err != nil {
+		return nil, err
+	}
+	dialer := net.Dialer{}
+	raw, err := dialer.DialContext(ctx, "tcp", c.cfg.Address)
+	if err != nil {
+		return nil, err
+	}
+	hs, err := clientHandshake(raw, c.cfg.CommonConfig, priv, serverPub)
+	if err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
+	sc, err := newConn(raw, c.cfg.CommonConfig, RoleClient, hs, true, true)
+	if err != nil {
+		return nil, err
+	}
+	sc.Start()
+	go c.monitor(sc)
+	return sc, nil
+}
+
+func (c *Client) monitor(sc *Conn) {
+	<-sc.Done()
+	c.mu.RLock()
+	auto := c.cfg.AutoReconnect
+	closed := c.closed
+	isCurrent := c.conn == sc
+	c.mu.RUnlock()
+	if !auto || closed || !isCurrent {
+		return
+	}
+	ctx := context.Background()
+	_ = c.reconnectLoop(ctx)
+}
+
+func (c *Client) reconnectLoop(ctx context.Context) error {
+	delay := c.cfg.ReconnectBaseDelay
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		c.mu.RLock()
+		closed := c.closed
+		c.mu.RUnlock()
+		if closed {
+			return ErrClosed
+		}
+		conn, err := c.connectOnce(ctx)
+		if err == nil {
+			c.mu.Lock()
+			old := c.conn
+			c.conn = conn
+			c.mu.Unlock()
+			if old != nil && old != conn {
+				_ = old.Close()
+			}
+			return nil
+		}
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		delay *= 2
+		if delay > c.cfg.ReconnectMaxDelay {
+			delay = c.cfg.ReconnectMaxDelay
+		}
+	}
+}
+
+func (c *Client) getConn() *Conn {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.conn
+}
+
+func (c *Client) Write(ctx context.Context, p []byte) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		sc := c.getConn()
+		if sc == nil {
+			if !c.cfg.AutoReconnect {
+				return ErrReconnectOff
+			}
+			if err := c.reconnectLoop(ctx); err != nil {
+				return err
+			}
+			continue
+		}
+		err := sc.Write(p)
+		if err == nil {
+			return nil
+		}
+		if !c.cfg.AutoReconnect {
+			return err
+		}
+		if err := c.reconnectLoop(ctx); err != nil {
+			return err
+		}
+	}
+}
+
+func (c *Client) Read(ctx context.Context) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		sc := c.getConn()
+		if sc == nil {
+			if !c.cfg.AutoReconnect {
+				return nil, ErrReconnectOff
+			}
+			if err := c.reconnectLoop(ctx); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		b, err := sc.Read(ctx)
+		if err == nil {
+			return b, nil
+		}
+		if !c.cfg.AutoReconnect {
+			return nil, err
+		}
+		if err := c.reconnectLoop(ctx); err != nil {
+			return nil, err
+		}
+	}
 }
 
 func (c *Client) Close() error {
 	c.mu.Lock()
 	c.closed = true
-	conn := c.conn
+	sc := c.conn
+	c.conn = nil
 	c.mu.Unlock()
-	if conn != nil {
-		return conn.Close()
+	if sc != nil {
+		return sc.Close()
 	}
 	return nil
-}
-
-// Connect establishes one secure connection. If a valid ticket exists, it tries resumption first.
-func (c *Client) Connect(ctx context.Context) (*Conn, error) {
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		return nil, ErrClosed
-	}
-	ticket := c.ticket.clone()
-	c.mu.Unlock()
-
-	conn, res, err := c.connectOnce(ctx, ticket)
-	if err != nil && ticket != nil {
-		// Server may reject stale resume tickets. Retry once with a full handshake.
-		conn, res, err = c.connectOnce(ctx, nil)
-	}
-	if err != nil {
-		return nil, err
-	}
-	secureConn, err := newConn(conn, c.cfg, roleClient, res.master)
-	if err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-	c.mu.Lock()
-	c.conn = secureConn
-	c.ticket = res.ticket.clone()
-	c.mu.Unlock()
-	secureConn.onClose = func(error) {
-		c.mu.Lock()
-		if c.conn == secureConn {
-			c.conn = nil
-		}
-		c.mu.Unlock()
-	}
-	return secureConn, nil
-}
-
-func (c *Client) connectOnce(ctx context.Context, ticket *SessionTicket) (net.Conn, handshakeResult, error) {
-	d := &net.Dialer{Timeout: c.cfg.DialTimeout}
-	nc, err := d.DialContext(ctx, "tcp", c.addr)
-	if err != nil {
-		return nil, handshakeResult{}, err
-	}
-	res, err := clientHandshake(nc, c.cfg, ticket)
-	if err != nil {
-		_ = nc.Close()
-		return nil, handshakeResult{}, err
-	}
-	return nc, res, nil
-}
-
-// Run connects, calls handler for each connection, and reconnects after accidental disconnects.
-// It stops on ctx cancellation, Client.Close, handler return with active local close, or when AutoReconnect is false.
-func (c *Client) Run(ctx context.Context, handler Handler) error {
-	backoff := c.cfg.ReconnectInitialBackoff
-	for {
-		c.mu.Lock()
-		closed := c.closed
-		c.mu.Unlock()
-		if closed {
-			return ErrClosed
-		}
-		conn, err := c.Connect(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if !c.cfg.AutoReconnect {
-				return err
-			}
-			if !sleepContext(ctx, backoff) {
-				return ctx.Err()
-			}
-			backoff = nextBackoff(backoff, c.cfg.ReconnectMaxBackoff)
-			continue
-		}
-		backoff = c.cfg.ReconnectInitialBackoff
-		if handler != nil {
-			handler(conn)
-		}
-		select {
-		case <-conn.Done():
-		case <-ctx.Done():
-			_ = conn.Close()
-			return ctx.Err()
-		}
-		if conn.ActiveClose() || !c.cfg.AutoReconnect {
-			if err := conn.CloseError(); err != nil && !errors.Is(err, ErrClosed) {
-				return err
-			}
-			return nil
-		}
-		if !sleepContext(ctx, backoff) {
-			return ctx.Err()
-		}
-		backoff = nextBackoff(backoff, c.cfg.ReconnectMaxBackoff)
-	}
-}
-
-func sleepContext(ctx context.Context, d time.Duration) bool {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-t.C:
-		return true
-	case <-ctx.Done():
-		return false
-	}
-}
-
-func nextBackoff(cur, max time.Duration) time.Duration {
-	n := cur * 2
-	if n <= 0 || n > max {
-		return max
-	}
-	return n
 }

@@ -1,88 +1,91 @@
 # securetcp
 
-一个可打包成库的 Go TCP 安全帧协议骨架，适合继续扩展成 Android/Kotlin 可调用的网络 SDK。
+一个 Go TCP 安全传输库示例，包含：
 
-## 协议帧
-
-固定 8 字节头：
-
-| 字段 | 大小 | 说明 |
-|---|---:|---|
-| Magic | 2 | 默认 `0x4c56` |
-| Version | 1 | 当前 `1` |
-| FrameType | 1 | 帧类型 |
-| Length | 4 | BigEndian，payload 长度 |
-
-握手完成后，除握手帧外，`DATA / PING / PONG / CLOSE / REKEY` 的 payload 都会使用 AES-256-GCM 加密认证。
-
-## 已实现能力
-
-- 服务端 / 客户端两部分
-- 固定帧头 + 指定长度循环读写
-- 心跳：客户端和服务端都会按间隔发送 PING，收到 PING 自动 PONG
-- 读写超时
+- 固定帧头：`magic + version + frameType + length`
+- magic/version 不匹配立即断开
+- 循环读写指定长度，读写 deadline
+- 客户端随机间隔 Ping，服务端自动 Pong
 - X25519 + AES-GCM + HKDF 的 Noise-IK 风格握手
-- 客户端预置服务端公钥，连接后自动加密
-- 定时自动 rekey，旧密钥有 grace 过期时间
-- session ticket 恢复：断线重连可复用上一次会话票据派生新密钥
-- 客户端非主动断开后可自动重连
-- gomobile 友好的 `MobileClient` 包装
+- 建立连接后所有业务数据和控制帧都加密认证
+- AEAD 序号 + 滑动窗口抗重放
+- 客户端自动重连，重用客户端/服务端长期身份密钥
+- 客户端定时 rekey，旧密钥保留短暂 grace period 后过期
+- gomobile wrapper，便于打包 AAR 给 Kotlin/Android 调用
 
-## 最小服务端
+> 说明：这里实现的是工程可用的“Noise-IK 风格”握手，不是 Noise Protocol Framework 的逐字节兼容实现。
 
-```go
-serverKP, _ := securetcp.GenerateKeyPair()
+## 快速运行
 
-srv, err := securetcp.Listen(":9000", securetcp.Config{
-    ServerStaticPrivateKey: serverKP.Private,
-    AllowResume: true,
-}, func(c *securetcp.Conn) {
-    for {
-        msg, err := c.ReadMessage()
-        if err != nil {
-            return
-        }
-        _ = c.WriteMessage(msg)
-    }
-})
-if err != nil { panic(err) }
-defer srv.Close()
+### 1. 生成服务端和客户端长期密钥
 
-fmt.Printf("server public key: %x\n", serverKP.Public)
+```bash
+go run ./cmd/keygen
+# 记下 SERVER_PRIVATE / SERVER_PUBLIC
+
+go run ./cmd/keygen
+# 记下 CLIENT_PRIVATE / CLIENT_PUBLIC
 ```
 
-## 最小客户端
+### 2. 启动服务端
 
-```go
-client, err := securetcp.NewClient("127.0.0.1:9000", securetcp.Config{
-    ServerStaticPublicKey: serverPublicKey,
-    AllowResume: true,
-    AutoReconnect: true,
-})
-if err != nil { panic(err) }
-
-conn, err := client.Connect(context.Background())
-if err != nil { panic(err) }
-defer conn.Close()
-
-_ = conn.WriteMessage([]byte("hello"))
-reply, _ := conn.ReadMessage()
-fmt.Println(string(reply))
+```bash
+go run ./cmd/server -addr :9443 -server-key "$SERVER_PRIVATE"
 ```
 
-## Android/Kotlin 方向
+### 3. 启动客户端
 
-`MobileClient` 避免把 Go channel 直接暴露给 Kotlin：
-
-```go
-mc, err := securetcp.NewMobileClient("1.2.3.4:9000", serverPublicKey, nil)
-_ = mc.Start()
-_ = mc.Write([]byte("hello"))
-msg, err := mc.Read(3000)
+```bash
+go run ./cmd/client \
+  -addr 127.0.0.1:9443 \
+  -client-key "$CLIENT_PRIVATE" \
+  -server-pub "$SERVER_PUBLIC" \
+  -msg "hello" \
+  -n 5
 ```
 
-后续用 gomobile 绑定时，可以把该包编译成 Android AAR，然后 Kotlin 调用 `NewMobileClient / Start / Stop / Write / Read / IsConnected / LastError`。
+## Android / Kotlin AAR
 
-## 重要说明
+安装 gomobile：
 
-这个实现是“Noise IK 思路”的轻量实现，不是逐字节兼容 Noise Protocol Framework 的标准消息格式。它的目标是工程可用、无第三方依赖、便于打包给 Android。若要做正式商用协议，建议继续增加：协议版本协商、服务端对客户端公钥白名单、限流、握手失败日志、fuzz 测试、抗重放窗口、完整安全审计。
+```bash
+go install golang.org/x/mobile/cmd/gomobile@latest
+gomobile init
+```
+
+打包：
+
+```bash
+gomobile bind -target=android -o securetcp.aar ./mobile
+```
+
+Kotlin 伪代码：
+
+```kotlin
+val c = mobile.Mobile.newClient(
+    "1.2.3.4:9443",
+    clientPrivateKeyB64,
+    serverPublicKeyB64
+)
+c.connect()
+c.send("hello".toByteArray())
+val reply = c.recv()
+c.close()
+```
+
+## 帧格式
+
+| 字段 | 长度 | 说明 |
+|---|---:|---|
+| Magic | 4 bytes | 默认 `0x4c575954` |
+| Version | 1 byte | 默认 `1` |
+| FrameType | 1 byte | 握手、数据、心跳、rekey、关闭 |
+| Length | 4 bytes | payload 长度，大端序 |
+
+握手帧 payload 明文承载临时公钥和加密身份；握手完成后，Data/Ping/Pong/Rekey/Close 的 payload 都是 AES-GCM 密文，格式为：
+
+```text
+epoch(8) | seq(8) | ciphertext+tag
+```
+
+AEAD AAD 绑定了 `frameType + epoch + seq`，防止帧类型被替换。

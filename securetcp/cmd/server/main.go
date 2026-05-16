@@ -1,14 +1,12 @@
 package main
 
 import (
-	"encoding/hex"
-	"errors"
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -16,73 +14,57 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", ":9000", "listen address")
-	keyFile := flag.String("key", "server_x25519.key", "hex encoded server private key file")
+	addr := flag.String("addr", ":9443", "listen address")
+	serverKey := flag.String("server-key", "", "server private key base64")
+	readTimeout := flag.Duration("read-timeout", 60*time.Second, "read timeout")
+	writeTimeout := flag.Duration("write-timeout", 15*time.Second, "write timeout")
 	flag.Parse()
 
-	privateKey, publicKey, err := loadOrCreateServerKey(*keyFile)
-	if err != nil {
-		log.Fatalf("server key error: %v", err)
+	if *serverKey == "" {
+		kp, err := securetcp.GenerateKeyPair()
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("No -server-key provided. Generated a temporary server key pair:")
+		fmt.Println("SERVER_PRIVATE=", kp.PrivateKeyB64)
+		fmt.Println("SERVER_PUBLIC =", kp.PublicKeyB64)
+		fmt.Println("Restart with -server-key $SERVER_PRIVATE, and pass SERVER_PUBLIC to the client.")
+		return
 	}
 
-	srv, err := securetcp.Listen(*addr, securetcp.Config{
-		ServerStaticPrivateKey: privateKey,
-		AllowResume:            true,
-		HeartbeatInterval:      10 * time.Second,
-		HeartbeatTimeout:       30 * time.Second,
-		ReadTimeout:            60 * time.Second,
-		WriteTimeout:           10 * time.Second,
-		RekeyInterval:          2 * time.Minute,
-		OldKeyGrace:            30 * time.Second,
-	}, func(c *securetcp.Conn) {
-		remote := c.NetConn().RemoteAddr().String()
-		log.Printf("client connected: %s", remote)
-		defer log.Printf("client disconnected: %s", remote)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-		for {
-			msg, err := c.ReadMessage()
-			if err != nil {
-				return
-			}
-			log.Printf("recv from %s: %q", remote, string(msg))
-			if err := c.WriteMessage(append([]byte("echo: "), msg...)); err != nil {
-				return
-			}
-		}
+	srv, err := securetcp.NewServer(securetcp.ServerConfig{
+		Address:             *addr,
+		ServerPrivateKeyB64: *serverKey,
+		CommonConfig: securetcp.CommonConfig{
+			ReadTimeout:     *readTimeout,
+			WriteTimeout:    *writeTimeout,
+			HeartbeatBase:   20 * time.Second,
+			HeartbeatJitter: 8 * time.Second,
+			RekeyInterval:   2 * time.Minute,
+			OldKeyGrace:     30 * time.Second,
+		},
 	})
 	if err != nil {
-		log.Fatalf("listen error: %v", err)
+		log.Fatal(err)
 	}
-	defer srv.Close()
 
-	fmt.Printf("listening: %s\n", srv.Addr())
-	fmt.Printf("server public key hex: %s\n", hex.EncodeToString(publicKey))
-	fmt.Println("copy this public key to the client -pub argument")
-
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
-	<-ch
-	fmt.Println("server shutting down")
-}
-
-func loadOrCreateServerKey(path string) ([]byte, []byte, error) {
-	if b, err := os.ReadFile(path); err == nil {
-		privateKey, err := hex.DecodeString(strings.TrimSpace(string(b)))
-		if err != nil {
-			return nil, nil, err
+	log.Println("securetcp server listening on", *addr)
+	err = srv.ListenAndServe(ctx, func(c *securetcp.Conn) {
+		log.Printf("client connected: %s peerStatic=%s", c.RemoteAddr(), c.PeerStaticPublicKeyB64())
+		for {
+			msg, err := c.Read(ctx)
+			if err != nil {
+				log.Printf("client %s disconnected: %v", c.RemoteAddr(), err)
+				return
+			}
+			log.Printf("recv from %s: %q", c.RemoteAddr(), string(msg))
+			_ = c.Write([]byte("echo: " + string(msg)))
 		}
-		publicKey, err := securetcp.PublicKeyFromPrivate(privateKey)
-		return privateKey, publicKey, err
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, nil, err
+	})
+	if err != nil && ctx.Err() == nil {
+		log.Fatal(err)
 	}
-
-	kp, err := securetcp.GenerateKeyPair()
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := os.WriteFile(path, []byte(hex.EncodeToString(kp.Private)), 0600); err != nil {
-		return nil, nil, err
-	}
-	return kp.Private, kp.Public, nil
 }

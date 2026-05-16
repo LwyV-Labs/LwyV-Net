@@ -1,176 +1,98 @@
 package securetcp
 
 import (
-	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/ecdh"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
-	"errors"
-	"io"
+	"fmt"
 )
 
-const (
-	x25519PrivateKeySize = 32
-	x25519PublicKeySize  = 32
-	aesGCMKeySize        = 32
-	nonceSize            = 12
-)
-
-// KeyPair is a raw X25519 static or ephemeral key pair.
-type KeyPair struct {
-	Private []byte
-	Public  []byte
-}
-
-// GenerateKeyPair creates an X25519 key pair. Persist server static keys in production.
-func GenerateKeyPair() (KeyPair, error) {
-	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
-	if err != nil {
-		return KeyPair{}, err
-	}
-	return KeyPair{Private: append([]byte(nil), priv.Bytes()...), Public: append([]byte(nil), priv.PublicKey().Bytes()...)}, nil
-}
-
-// PublicKeyFromPrivate derives the X25519 public key from a raw private key.
-func PublicKeyFromPrivate(private []byte) ([]byte, error) {
-	priv, err := ecdh.X25519().NewPrivateKey(private)
+func newGCM(key []byte) (cipher.AEAD, error) {
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
-	return append([]byte(nil), priv.PublicKey().Bytes()...), nil
+	return cipher.NewGCM(block)
 }
 
-func ecdhShared(private, peerPublic []byte) ([]byte, error) {
-	priv, err := ecdh.X25519().NewPrivateKey(private)
-	if err != nil {
-		return nil, err
-	}
-	pub, err := ecdh.X25519().NewPublicKey(peerPublic)
-	if err != nil {
-		return nil, err
-	}
-	return priv.ECDH(pub)
+func zeroNonce() []byte { return make([]byte, 12) }
+
+func nonceFor(epoch, seq uint64) []byte {
+	var n [12]byte
+	binary.BigEndian.PutUint32(n[0:4], uint32(epoch))
+	binary.BigEndian.PutUint64(n[4:12], seq)
+	return n[:]
 }
 
-func randomBytes(n int) ([]byte, error) {
+func randBytes(n int) ([]byte, error) {
 	b := make([]byte, n)
-	_, err := io.ReadFull(rand.Reader, b)
+	_, err := rand.Read(b)
 	return b, err
 }
 
-func hkdfExtract(salt, ikm []byte) []byte {
-	if len(salt) == 0 {
-		salt = make([]byte, sha256.Size)
+func appendAll(parts ...[]byte) []byte {
+	var total int
+	for _, p := range parts {
+		total += len(p)
 	}
-	mac := hmac.New(sha256.New, salt)
-	mac.Write(ikm)
+	out := make([]byte, 0, total)
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	return out
+}
+
+func hmacSHA256(key []byte, parts ...[]byte) []byte {
+	mac := hmac.New(sha256.New, key)
+	for _, p := range parts {
+		mac.Write(p)
+	}
 	return mac.Sum(nil)
 }
 
-func hkdfExpand(prk []byte, info []byte, n int) []byte {
-	var out bytes.Buffer
-	var t []byte
-	counter := byte(1)
-	for out.Len() < n {
-		mac := hmac.New(sha256.New, prk)
-		mac.Write(t)
-		mac.Write(info)
-		mac.Write([]byte{counter})
-		t = mac.Sum(nil)
-		out.Write(t)
-		counter++
+func prologue(cfg CommonConfig) []byte {
+	var p [8]byte
+	binary.BigEndian.PutUint32(p[0:4], cfg.Magic)
+	p[4] = cfg.Version
+	copy(p[5:], []byte{'I', 'K', '1'})
+	return p[:]
+}
+
+func deriveSessionKeys(root []byte) (c2s, s2c []byte) {
+	km := hkdfSHA256(root, []byte("securetcp directional keys"), []byte("c2s|s2c"), 64)
+	return km[:32], km[32:]
+}
+
+func makeAEADsForRole(root []byte, role Role) (send, recv cipher.AEAD, err error) {
+	c2s, s2c := deriveSessionKeys(root)
+	if role == RoleClient {
+		send, err = newGCM(c2s)
+		if err != nil {
+			return nil, nil, err
+		}
+		recv, err = newGCM(s2c)
+		return send, recv, err
 	}
-	return out.Bytes()[:n]
-}
-
-func hkdf(salt, ikm []byte, info string, n int) []byte {
-	return hkdfExpand(hkdfExtract(salt, ikm), []byte(info), n)
-}
-
-func sha256Sum(parts ...[]byte) []byte {
-	h := sha256.New()
-	for _, p := range parts {
-		h.Write(p)
-	}
-	return h.Sum(nil)
-}
-
-type cipherState struct {
-	aead      cipher.AEAD
-	nonceBase [nonceSize]byte
-}
-
-func newCipherState(master []byte, label string) (*cipherState, error) {
-	material := hkdf(nil, master, label, aesGCMKeySize+nonceSize)
-	block, err := aes.NewCipher(material[:aesGCMKeySize])
-	if err != nil {
-		return nil, err
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	cs := &cipherState{aead: aead}
-	copy(cs.nonceBase[:], material[aesGCMKeySize:])
-	return cs, nil
-}
-
-func (cs *cipherState) nonce(seq uint64) []byte {
-	n := make([]byte, nonceSize)
-	copy(n, cs.nonceBase[:])
-	var tail [8]byte
-	binary.BigEndian.PutUint64(tail[:], seq)
-	for i := 0; i < 8; i++ {
-		n[nonceSize-8+i] ^= tail[i]
-	}
-	return n
-}
-
-func (cs *cipherState) seal(seq uint64, aad []byte, plaintext []byte) []byte {
-	return cs.aead.Seal(nil, cs.nonce(seq), plaintext, aad)
-}
-
-func (cs *cipherState) open(seq uint64, aad []byte, ciphertext []byte) ([]byte, error) {
-	return cs.aead.Open(nil, cs.nonce(seq), ciphertext, aad)
-}
-
-func encryptOnce(key, aad, plaintext []byte) ([]byte, []byte, error) {
-	if len(key) < aesGCMKeySize {
-		return nil, nil, errors.New("securetcp: short aead key")
-	}
-	block, err := aes.NewCipher(key[:aesGCMKeySize])
+	send, err = newGCM(s2c)
 	if err != nil {
 		return nil, nil, err
 	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, nil, err
-	}
-	nonce, err := randomBytes(aead.NonceSize())
-	if err != nil {
-		return nil, nil, err
-	}
-	return nonce, aead.Seal(nil, nonce, plaintext, aad), nil
+	recv, err = newGCM(c2s)
+	return send, recv, err
 }
 
-func decryptOnce(key, nonce, aad, ciphertext []byte) ([]byte, error) {
-	if len(key) < aesGCMKeySize {
-		return nil, errors.New("securetcp: short aead key")
+func encodeU64(v uint64) []byte {
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], v)
+	return b[:]
+}
+
+func requireLen(name string, got, want int) error {
+	if got != want {
+		return fmt.Errorf("%s length = %d, want %d", name, got, want)
 	}
-	block, err := aes.NewCipher(key[:aesGCMKeySize])
-	if err != nil {
-		return nil, err
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	if len(nonce) != aead.NonceSize() {
-		return nil, errors.New("securetcp: bad nonce")
-	}
-	return aead.Open(nil, nonce, ciphertext, aad)
+	return nil
 }

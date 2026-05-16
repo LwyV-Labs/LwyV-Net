@@ -2,84 +2,84 @@ package securetcp
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"net"
 	"sync"
 )
 
-// Handler handles one accepted secure connection. Return when that connection should close.
+type Server struct {
+	cfg  ServerConfig
+	priv any
+
+	lnMu sync.Mutex
+	ln   net.Listener
+}
+
 type Handler func(*Conn)
 
-// Server is a secure TCP server.
-type Server struct {
-	ln      net.Listener
-	cfg     Config
-	cache   *sessionCache
-	handler Handler
-	ctx     context.Context
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
-}
-
-// Listen starts a server listener and accepts connections in the background.
-func Listen(addr string, cfg Config, handler Handler) (*Server, error) {
-	if err := cfg.NormalizeServer(); err != nil {
+func NewServer(cfg ServerConfig) (*Server, error) {
+	cfg.normalize()
+	if cfg.Address == "" {
+		cfg.Address = ":9443"
+	}
+	if cfg.ServerPrivateKeyB64 == "" {
+		return nil, fmt.Errorf("server private key is required")
+	}
+	if _, err := parsePrivateKeyB64(cfg.ServerPrivateKeyB64); err != nil {
 		return nil, err
 	}
-	ln, err := net.Listen("tcp", addr)
+	return &Server{cfg: cfg}, nil
+}
+
+func (s *Server) ListenAndServe(ctx context.Context, h Handler) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	priv, err := parsePrivateKeyB64(s.cfg.ServerPrivateKeyB64)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	s := &Server{ln: ln, cfg: cfg, cache: newSessionCache(), handler: handler, ctx: ctx, cancel: cancel}
-	s.wg.Add(1)
-	go s.acceptLoop()
-	return s, nil
-}
-
-func (s *Server) Addr() net.Addr { return s.ln.Addr() }
-
-func (s *Server) Close() error {
-	s.cancel()
-	err := s.ln.Close()
-	s.wg.Wait()
-	return err
-}
-
-func (s *Server) acceptLoop() {
-	defer s.wg.Done()
+	ln, err := net.Listen("tcp", s.cfg.Address)
+	if err != nil {
+		return err
+	}
+	s.lnMu.Lock()
+	s.ln = ln
+	s.lnMu.Unlock()
+	go func() { <-ctx.Done(); _ = ln.Close() }()
 	for {
-		nc, err := s.ln.Accept()
+		nc, err := ln.Accept()
 		if err != nil {
 			select {
-			case <-s.ctx.Done():
-				return
+			case <-ctx.Done():
+				return ctx.Err()
 			default:
-				if errors.Is(err, net.ErrClosed) {
-					return
-				}
-				continue
+				return err
 			}
 		}
-		s.wg.Add(1)
-		go s.handleRawConn(nc)
+		go func(raw net.Conn) {
+			hs, err := serverHandshake(raw, s.cfg.CommonConfig, priv)
+			if err != nil {
+				_ = raw.Close()
+				return
+			}
+			sc, err := newConn(raw, s.cfg.CommonConfig, RoleServer, hs, false, s.cfg.ServerInitiatesRekey)
+			if err != nil {
+				return
+			}
+			sc.Start()
+			if h != nil {
+				h(sc)
+			}
+		}(nc)
 	}
 }
 
-func (s *Server) handleRawConn(nc net.Conn) {
-	defer s.wg.Done()
-	res, err := serverHandshake(nc, s.cfg, s.cache)
-	if err != nil {
-		_ = nc.Close()
-		return
+func (s *Server) Close() error {
+	s.lnMu.Lock()
+	defer s.lnMu.Unlock()
+	if s.ln != nil {
+		return s.ln.Close()
 	}
-	conn, err := newConn(nc, s.cfg, roleServer, res.master)
-	if err != nil {
-		_ = nc.Close()
-		return
-	}
-	if s.handler != nil {
-		s.handler(conn)
-	}
-	_ = conn.Close()
+	return nil
 }
