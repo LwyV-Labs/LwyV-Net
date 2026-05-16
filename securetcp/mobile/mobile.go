@@ -10,7 +10,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"securetcp"
+	"github.com/LwyV-Labs/LwyV-Net/securetcp"
 )
 
 type Client struct{ inner *securetcp.Client }
