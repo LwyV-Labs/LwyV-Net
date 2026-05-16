@@ -88,6 +88,7 @@ func monitorClientStats(client *vlan.Client, stop <-chan struct{}) {
 func monitorServerStats(server *vlan.Server, stop <-chan struct{}) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	time.Sleep(10 * time.Second)
 	for {
 		select {
 		case <-stop:
