@@ -13,6 +13,9 @@ type ClientConfig struct {
 	Addr               string
 	ServerPublicKeyHex string
 
+	// Android 用它调用 VpnService.protect(fd)
+	DialContext func(ctx context.Context, network string, addr string) (net.Conn, error)
+
 	ReconnectBase   time.Duration
 	ReconnectJitter time.Duration
 
@@ -116,11 +119,22 @@ func (c *Client) isClosed() bool {
 }
 
 func (c *Client) connectAndServe(ctx context.Context) error {
-	dialer := &net.Dialer{}
-	raw, err := dialer.DialContext(ctx, "tcp", c.cfg.Addr)
+	var (
+		raw net.Conn
+		err error
+	)
+
+	if c.cfg.DialContext != nil {
+		raw, err = c.cfg.DialContext(ctx, "tcp", c.cfg.Addr)
+	} else {
+		dialer := &net.Dialer{}
+		raw, err = dialer.DialContext(ctx, "tcp", c.cfg.Addr)
+	}
+
 	if err != nil {
 		return err
 	}
+
 	secure, err := clientHandshake(raw, c.cfg.BaseConfig, c.serverPub)
 	if err != nil {
 		_ = raw.Close()
