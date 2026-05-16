@@ -13,7 +13,6 @@ import (
 
 func main() {
 	mode := parseRunMode(os.Args)
-	serverIndex := parseServerIndex(os.Args)
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 
@@ -29,7 +28,7 @@ func main() {
 		return
 	case string(RunModeClient):
 		client := vlan2.NewClient(conf2.LoadClientConfig())
-		go client.Start(serverIndex)
+		go client.Start()
 		stopStats := make(chan struct{})
 		go monitorClientStats2(client, stopStats)
 		<-ch

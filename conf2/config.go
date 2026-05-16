@@ -20,81 +20,144 @@ const (
 )
 
 func LoadClientConfig() ClientConfig {
-	Conf := ClientConfig{}
-	path := clientConfigPath
-	data, err := os.ReadFile(path)
-	if err != nil {
-		log.Fatalf("加载配置文件失败：%v", err)
+	var conf ClientConfig
+	mustLoadJSON(clientConfigPath, &conf)
+
+	if strings.TrimSpace(conf.Server) == "" {
+		log.Fatalf("client.server 不能为空")
 	}
-	if err = json.Unmarshal(data, &Conf); err != nil {
-		log.Fatalf("解析配置文件失败：%v", err)
+	if strings.TrimSpace(conf.ServerPublicKey) == "" {
+		log.Fatalf("client.serverPublicKey 不能为空")
 	}
-	validateClientConfig(&Conf)
-	return Conf
+	if conf.IfName == "" {
+		conf.IfName = "LwyV-NetAdapter"
+	}
+	if conf.MTU <= 0 {
+		conf.MTU = 1300
+	}
+
+	ensurePrivateKey(clientConfigPath, &conf.PrivateKey)
+
+	if _, err := secure.ParsePrivateKey(conf.PrivateKey); err != nil {
+		log.Fatalf("解析 client.privateKey 失败: %v", err)
+	}
+	if _, err := secure.ParsePublicKey(conf.ServerPublicKey); err != nil {
+		log.Fatalf("解析 client.serverPublicKey 失败: %v", err)
+	}
+
+	return conf
 }
 
 func LoadServerConfig() ServerConfig {
-	Conf := ServerConfig{}
-	path := serverConfigPath
-	data, err := os.ReadFile(path)
-	if err != nil {
-		log.Fatalf("加载配置文件失败：%v", err)
-	}
-	if err = json.Unmarshal(data, &Conf); err != nil {
-		log.Fatalf("解析配置文件失败：%v", err)
-	}
-	validateServerConfig(&Conf)
-	return Conf
-}
+	var conf ServerConfig
+	mustLoadJSON(serverConfigPath, &conf)
 
-func validateClientConfig(conf *ClientConfig) {
-	if len(conf.Servers) == 0 {
-		log.Fatalf("client.servers 不能为空")
+	if conf.Port <= 0 {
+		conf.Port = 9999
 	}
-	for i, server := range conf.Servers {
-		if strings.TrimSpace(server.PublicKey) == "" {
-			log.Fatalf("client.servers[%d].publicKey 不能为空", i)
-		}
-		if server.MTU <= 0 {
-			log.Fatalf("client.servers[%d].mtu 必须大于0", i)
-		}
+	if conf.IfName == "" {
+		conf.IfName = "LwyV-Gateway"
 	}
-	fillDerivedFields(&conf.BaseConfig, clientConfigPath)
-}
+	if conf.MTU <= 0 {
+		conf.MTU = 1300
+	}
 
-func validateServerConfig(conf *ServerConfig) {
-	fillDerivedFields(&conf.BaseConfig, serverConfigPath)
+	if conf.VDHCP.StartIP == "" {
+		conf.VDHCP.StartIP = "172.19.0.10"
+	}
+	if conf.VDHCP.EndIP == "" {
+		conf.VDHCP.EndIP = "172.19.0.200"
+	}
+	if conf.VDHCP.SubnetMask == "" {
+		conf.VDHCP.SubnetMask = "255.255.255.0"
+	}
+	if conf.VDHCP.Gateway == "" {
+		conf.VDHCP.Gateway = "172.19.0.254"
+	}
+
 	if net.ParseIP(conf.VDHCP.Gateway) == nil {
 		log.Fatalf("非法网关地址: %s", conf.VDHCP.Gateway)
 	}
-	if conf.VDHCP.SubnetMask != "" {
-		if _, err := MaskToPrefix(conf.VDHCP.SubnetMask); err != nil {
-			log.Fatalf("非法子网掩码: %s, 错误: %v", conf.VDHCP.SubnetMask, err)
-		}
+	if _, err := MaskToPrefix(conf.VDHCP.SubnetMask); err != nil {
+		log.Fatalf("非法子网掩码: %s, 错误: %v", conf.VDHCP.SubnetMask, err)
+	}
+
+	ensurePrivateKey(serverConfigPath, &conf.PrivateKey)
+
+	if _, err := secure.ParsePrivateKey(conf.PrivateKey); err != nil {
+		log.Fatalf("解析 server.privateKey 失败: %v", err)
+	}
+
+	return conf
+}
+
+func mustLoadJSON(path string, v any) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatalf("加载配置文件失败: %v", err)
+	}
+	if err := json.Unmarshal(data, v); err != nil {
+		log.Fatalf("解析配置文件失败: %v", err)
 	}
 }
 
-func fillDerivedFields(base *BaseConfig, path string) {
-	// privateKey / peerPublicKeys 在 JSON 中是字符串，
-	// 这里会解析成后续握手加密真正要用的二进制对象。
-	if strings.TrimSpace(base.PrivateKey) == "" {
-		privateKey, publicKey, err := GenerateAndWriteKeys(path)
+func ensurePrivateKey(path string, key *string) {
+	if strings.TrimSpace(*key) != "" {
+		return
+	}
 
-		if err != nil {
-			log.Fatalf("自动生成privateKey失败: %v", err)
-		}
-		base.PrivateKey = privateKey
-		log.Printf("privateKey 为空，已自动生成新密钥；请持久化该密钥。publicKey=%s", publicKey)
-	}
-	identity, err := secure.ParsePrivateKey(base.PrivateKey)
+	privateKey, publicKey, err := generateNoiseKeyPair()
 	if err != nil {
-		log.Fatalf("解析privateKey失败: %v", err)
+		log.Fatalf("自动生成 privateKey 失败: %v", err)
 	}
-	base.Identity = identity
+
+	*key = privateKey
+
+	if err := patchPrivateKey(path, privateKey); err != nil {
+		log.Fatalf("写入 privateKey 失败: %v", err)
+	}
+
+	log.Printf("privateKey 为空，已自动生成并写回配置文件；publicKey=%s", publicKey)
+}
+
+func patchPrivateKey(path string, privateKey string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("读取配置文件失败: %w", err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return fmt.Errorf("解析配置文件失败: %w", err)
+	}
+
+	m["privateKey"] = privateKey
+
+	out, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return fmt.Errorf("编码配置文件失败: %w", err)
+	}
+
+	perm := os.FileMode(0644)
+	if info, err := os.Stat(path); err == nil {
+		perm = info.Mode().Perm()
+	}
+
+	return os.WriteFile(path, out, perm)
+}
+
+func generateNoiseKeyPair() (privateKey string, publicKey string, err error) {
+	private, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return "", "", err
+	}
+
+	return base64.StdEncoding.EncodeToString(private.Bytes()),
+		base64.StdEncoding.EncodeToString(private.PublicKey().Bytes()),
+		nil
 }
 
 func MaskToPrefix(mask string) (int, error) {
-	// 把点分十进制掩码（255.255.255.0）转成前缀长度（24）。
 	ip := net.ParseIP(mask).To4()
 	if ip == nil {
 		return 0, fmt.Errorf("非法子网掩码: %s", mask)
@@ -104,76 +167,4 @@ func MaskToPrefix(mask string) (int, error) {
 		return 0, fmt.Errorf("非法子网掩码: %s", mask)
 	}
 	return ones, nil
-}
-
-// GenerateAndWriteKeys 生成一组 Noise IK / ECDH 长期身份密钥，并写入配置文件。
-func GenerateAndWriteKeys(path string) (pr string, pu string, err error) {
-	private, public, err := generateNoiseKeyPair()
-	if err != nil {
-		return "", "", err
-	}
-	if _, err := secure.ParsePrivateKey(private); err != nil {
-		return "", "", err
-	}
-	if _, err := secure.ParsePublicKey(public); err != nil {
-		return "", "", err
-	}
-	if err := writeKeysToConfig(path, private); err != nil {
-		return "", "", err
-	}
-	return private, public, nil
-}
-
-func generateNoiseKeyPair() (privateKey string, publicKey string, err error) {
-	// X25519 是 Noise IK / ECDH 常用的 32 字节 Curve25519 密钥。
-	private, err := ecdh.X25519().GenerateKey(rand.Reader)
-	if err != nil {
-		return "", "", err
-	}
-	return base64.StdEncoding.EncodeToString(private.Bytes()),
-		base64.StdEncoding.EncodeToString(private.PublicKey().Bytes()),
-		nil
-}
-
-func writeKeysToConfig(path string, privateKey string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("读取配置文件失败: %w", err)
-	}
-
-	var out []byte
-	if path == serverConfigPath {
-		var cfg ServerConfig
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			return fmt.Errorf("解析配置文件失败: %w", err)
-		}
-		if privateKey != "" {
-			cfg.PrivateKey = privateKey
-		}
-		out, err = json.MarshalIndent(&cfg, "", "  ")
-		if err != nil {
-			return fmt.Errorf("编码配置文件失败: %w", err)
-		}
-	} else {
-		var cfg ClientConfig
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			return fmt.Errorf("解析配置文件失败: %w", err)
-		}
-		if privateKey != "" {
-			cfg.PrivateKey = privateKey
-		}
-		out, err = json.MarshalIndent(&cfg, "", "  ")
-		if err != nil {
-			return fmt.Errorf("编码配置文件失败: %w", err)
-		}
-	}
-
-	perm := os.FileMode(0644)
-	if info, err := os.Stat(path); err == nil {
-		perm = info.Mode().Perm()
-	}
-	if err := os.WriteFile(path, out, perm); err != nil {
-		return fmt.Errorf("写入配置文件失败: %w", err)
-	}
-	return nil
 }

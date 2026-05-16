@@ -27,10 +27,10 @@ func NewClient(conf conf2.ClientConfig) *Client {
 	return client
 }
 
-func (c *Client) Start(selectIndex int) {
+func (c *Client) Start() {
 	// 1) 选择目标服务端配置；2) 创建 TUN 网卡；3) 启动收发循环。
 	var err error
-	if c.tun, err = tunSetup.NewTUNTunnel(c.conf.IfName, c.conf.Servers[selectIndex].MTU); err != nil {
+	if c.tun, err = tunSetup.NewTUNTunnel(c.conf.IfName, c.conf.MTU); err != nil {
 		log.Fatalf("⚠️ 创建虚拟网卡失败: %v", err)
 	}
 
@@ -45,10 +45,10 @@ func (c *Client) Start(selectIndex int) {
 	log.Printf("✅ 客户端密钥生成成功\n 私钥：PrivateKey[%s] \n 公钥：publicKey[%s]", kp.PrivateKeyB64, kp.PublicKeyB64)
 
 	conn, err := securetcp.NewClient(securetcp.ClientConfig{
-		Address:             c.conf.Servers[selectIndex].ServerIP,
-		ClientPrivateKeyB64: kp.PrivateKeyB64,
-		ServerPublicKeyB64:  kp.PublicKeyB64,
-		AutoReconnect:       true,
+		Address:             c.conf.Server,
+		ClientPrivateKeyB64: c.conf.PrivateKey,
+		ServerPublicKeyB64:  c.conf.ServerPublicKey,
+		AutoReconnect:       false, // 下面解释
 		CommonConfig: securetcp.CommonConfig{
 			ReadTimeout:     60 * time.Second,
 			WriteTimeout:    15 * time.Second,
@@ -63,7 +63,6 @@ func (c *Client) Start(selectIndex int) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer conn.Close()
 
 	ctx := context.Background()
 	if err := conn.Connect(ctx); err != nil {
@@ -71,7 +70,7 @@ func (c *Client) Start(selectIndex int) {
 	}
 
 	log.Printf("认证握手成功，开始申请虚拟地址")
-	if err := c.initAddress(selectIndex); err != nil {
+	if err := c.initAddress(); err != nil {
 		log.Printf("初始化地址失败: %v", err)
 		_ = conn.Close()
 		return
@@ -104,7 +103,7 @@ func (c *Client) Stop() {
 	log.Printf("客户端已停止")
 }
 
-func (c *Client) initAddress(selectIndex int) error {
+func (c *Client) initAddress() error {
 	// 通过虚拟 DHCP 从服务端申请一个虚拟网段地址。
 	dhcpIP, dhcpMask, dhcpGateway, err := c.requestVDHCP(context.Background())
 	if err != nil {
@@ -116,7 +115,7 @@ func (c *Client) initAddress(selectIndex int) error {
 	}
 	if c.conf.Proxy {
 		// 代理模式：把默认流量经虚拟网卡导向服务端网关。
-		if err = tunSetup.SetupClientProxyRouting(c.conf.Servers[selectIndex].ServerIP, c.conf.IfName, dhcpGateway); err != nil {
+		if err = tunSetup.SetupClientProxyRouting(c.conf.Server, c.conf.IfName, dhcpGateway); err != nil {
 			return fmt.Errorf("客户端代理路由初始化失败: %w", err)
 		}
 	}

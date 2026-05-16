@@ -289,7 +289,9 @@ func (s *Server) handleDHCPDiscover(peer *ClientPeer, msg vdhcp2.Message) {
 	lease, err := s.dhcp.Acquire(peer.peerPublicKey)
 	if err != nil {
 		nak, _ := vdhcp2.EncodeNak(msg.RequestID, err.Error())
+		peer.mu.Lock()
 		_ = peer.conn.Write(Pack(TypeVDHCP, nak))
+		peer.mu.Unlock()
 		return
 	}
 

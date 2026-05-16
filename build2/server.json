@@ -1,0 +1,13 @@
+{
+  "privateKey": "Gdgdwua7wo4v6i7/kwAX7AVbM1gT5WEqWukjRAOsh00=",
+  "port": 9999,
+  "ifName": "LwyV-Gateway",
+  "mtu": 1300,
+  "proxy": true,
+  "vdhcp": {
+    "startIP": "172.19.0.10",
+    "endIP": "172.19.0.200",
+    "subnetMask": "255.255.255.0",
+    "gateway": "172.19.0.254"
+  }
+}

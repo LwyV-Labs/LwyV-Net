@@ -1,38 +1,23 @@
 package conf2
 
-import "github.com/LwyV-Labs/LwyV-Net/secure"
-
-type BaseConfig struct {
-	PrivateKey string          `json:"privateKey"`
-	Identity   secure.Identity `json:"-"`
-	PeerStatic []byte          `json:"-"`
-	Proxy      bool            `json:"proxy"`
-}
-
-// ServerConfig 服务端配置
-type ServerConfig struct {
-	BaseConfig
-	MTU    int         `json:"mtu"`
-	Port   int         `json:"port"`
-	IfName string      `json:"ifName"`
-	VDHCP  VDHCPConfig `json:"vdhcp"`
-}
-
-type ServerEndpoint struct {
-	Name      string `json:"name"`
-	ServerIP  string `json:"ip"`
-	PublicKey string `json:"publicKey"`
-	MTU       int    `json:"mtu"`
-}
-
-// ClientConfig 客户端配置
 type ClientConfig struct {
-	BaseConfig
-	IfName  string           `json:"ifName"`
-	Servers []ServerEndpoint `json:"servers"`
+	PrivateKey      string `json:"privateKey"`
+	Server          string `json:"server"`
+	ServerPublicKey string `json:"serverPublicKey"`
+	IfName          string `json:"ifName"`
+	MTU             int    `json:"mtu"`
+	Proxy           bool   `json:"proxy"`
 }
 
-// VDHCPConfig 虚拟DHCP配置
+type ServerConfig struct {
+	PrivateKey string      `json:"privateKey"`
+	Port       int         `json:"port"`
+	IfName     string      `json:"ifName"`
+	MTU        int         `json:"mtu"`
+	Proxy      bool        `json:"proxy"`
+	VDHCP      VDHCPConfig `json:"vdhcp"`
+}
+
 type VDHCPConfig struct {
 	StartIP    string `json:"startIP"`
 	EndIP      string `json:"endIP"`
