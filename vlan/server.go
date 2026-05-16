@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,13 +30,19 @@ type Server struct {
 	tun   *tunSetup.TUNTunnel
 	dhcp  *vdhcp.Manager
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	stop   atomic.Bool
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	stop      atomic.Bool
+	startedAt time.Time
 
 	eventMu         sync.RWMutex
 	onVDHCPAssigned VDHCPAssignedCallback
+
+	management        *http.Server
+	managementMu      sync.Mutex
+	managementEvents  []ManagementEvent
+	managementEventID uint64
 }
 
 func NewServer(conf config.ServerConfig) *Server {
@@ -55,7 +62,16 @@ func (s *Server) Start() {
 		log.Fatalf("初始化 tcpx 服务端失败: %v", err)
 	}
 
+	s.startedAt = time.Now()
 	s.ctx, s.cancel = context.WithCancel(context.Background())
+	s.recordManagementEvent("server_started", "服务端已启动", map[string]any{
+		"port":  s.conf.Port,
+		"proxy": s.conf.Proxy,
+	})
+	if err := s.initManagement(); err != nil {
+		log.Fatalf("初始化 Management API 失败: %v", err)
+	}
+
 	s.wg.Add(1)
 	go s.sweepDHCPLeases()
 	if s.tun != nil {
@@ -80,6 +96,7 @@ func (s *Server) Stop() {
 	if s.tcp != nil {
 		_ = s.tcp.Close()
 	}
+	s.shutdownManagement()
 	for _, peer := range s.peers.all() {
 		peer.close()
 	}
@@ -223,6 +240,10 @@ func (s *Server) handleClientAuth(peer *ClientPeer, payload []byte) {
 	clientID, err := VerifyClientAuth(payload, s.conf.PrivateKey)
 	if err != nil {
 		log.Printf("客户端身份认证失败 remote=%s err=%v", peer.remoteAddr(), err)
+		s.recordManagementEvent("auth_failed", "客户端身份认证失败", map[string]any{
+			"remoteAddr": peer.remoteAddr(),
+			"error":      err.Error(),
+		})
 		_ = peer.conn.Close()
 		return
 	}
@@ -232,6 +253,10 @@ func (s *Server) handleClientAuth(peer *ClientPeer, payload []byte) {
 		return
 	}
 	log.Printf("客户端身份认证成功 remote=%s clientID=%s", peer.remoteAddr(), shortID(clientID))
+	s.recordManagementEvent("client_authed", "客户端身份认证成功", map[string]any{
+		"clientID":   clientID,
+		"remoteAddr": peer.remoteAddr(),
+	})
 }
 
 func (s *Server) handleVDHCP(peer *ClientPeer, pkt []byte) {
@@ -324,6 +349,10 @@ func (s *Server) cleanupPeer(peer *ClientPeer) {
 		s.dhcp.MarkOffline(peer.clientID())
 	}
 	log.Printf("客户端断开: clientID=%s ip=%s", shortID(peer.clientID()), peer.ip())
+	s.recordManagementEvent("client_disconnected", "客户端断开", map[string]any{
+		"clientID":  peer.clientID(),
+		"virtualIP": peer.ip(),
+	})
 }
 
 func (s *Server) tunToClients() {

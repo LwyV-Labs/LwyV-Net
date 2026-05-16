@@ -108,6 +108,9 @@ func applyServerDefaults(conf *ServerConfig) {
 	if len(conf.VDHCP.DNS) == 0 {
 		conf.VDHCP.DNS = defaultDNSServers()
 	}
+	if conf.Management.Addr == "" {
+		conf.Management.Addr = "127.0.0.1:18080"
+	}
 }
 
 func validateVDHCP(conf VDHCPConfig) error {

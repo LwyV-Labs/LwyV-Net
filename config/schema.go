@@ -12,13 +12,14 @@ type ClientConfig struct {
 }
 
 type ServerConfig struct {
-	PrivateKey string          `json:"privateKey"`
-	Port       int             `json:"port"`
-	IfName     string          `json:"ifName"`
-	MTU        int             `json:"mtu"`
-	Proxy      bool            `json:"proxy"`
-	VDHCP      VDHCPConfig     `json:"vdhcp"`
-	TCP        TransportConfig `json:"tcp,omitempty"`
+	PrivateKey string           `json:"privateKey"`
+	Port       int              `json:"port"`
+	IfName     string           `json:"ifName"`
+	MTU        int              `json:"mtu"`
+	Proxy      bool             `json:"proxy"`
+	VDHCP      VDHCPConfig      `json:"vdhcp"`
+	TCP        TransportConfig  `json:"tcp,omitempty"`
+	Management ManagementConfig `json:"management,omitempty"`
 }
 
 type VDHCPConfig struct {
@@ -27,6 +28,12 @@ type VDHCPConfig struct {
 	SubnetMask string   `json:"subnetMask"`
 	Gateway    string   `json:"gateway"`
 	DNS        []string `json:"dns"`
+}
+
+type ManagementConfig struct {
+	Enabled bool   `json:"enabled"`
+	Addr    string `json:"addr,omitempty"`
+	Token   string `json:"token,omitempty"`
 }
 
 // TransportConfig is optional. A zero value keeps the package defaults.

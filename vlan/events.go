@@ -37,6 +37,9 @@ func (c *Client) emitVDHCPAssigned(info VDHCPAssignedInfo) {
 }
 
 func (s *Server) emitVDHCPAssigned(info VDHCPAssignedInfo) {
+	info = cloneVDHCPAssignedInfo(info)
+	s.recordManagementEvent("vdhcp_assigned", "vDHCP 分配成功", info)
+
 	s.eventMu.RLock()
 	cb := s.onVDHCPAssigned
 	s.eventMu.RUnlock()
