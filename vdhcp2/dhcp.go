@@ -17,14 +17,13 @@ const (
 type Message struct {
 	Type string `json:"type"`
 
-	// 用于匹配一次请求和响应，防止客户端收到旧响应后误处理。
+	// RequestID is used to match one request/response pair and reject stale offers.
 	RequestID string `json:"requestId,omitempty"`
 
-	IP         string `json:"ip,omitempty"`
-	SubnetMask string `json:"subnetMask,omitempty"`
-	Gateway    string `json:"gateway,omitempty"`
-
-	LeaseSeconds int64 `json:"leaseSeconds,omitempty"`
+	IP           string `json:"ip,omitempty"`
+	SubnetMask   string `json:"subnetMask,omitempty"`
+	Gateway      string `json:"gateway,omitempty"`
+	LeaseSeconds int64  `json:"leaseSeconds,omitempty"`
 
 	Reason string `json:"reason,omitempty"`
 }
@@ -39,10 +38,7 @@ func NewRequestID() string {
 
 func EncodeDiscover() ([]byte, string, error) {
 	reqID := NewRequestID()
-	b, err := json.Marshal(Message{
-		Type:      MessageTypeDiscover,
-		RequestID: reqID,
-	})
+	b, err := json.Marshal(Message{Type: MessageTypeDiscover, RequestID: reqID})
 	return b, reqID, err
 }
 
@@ -58,11 +54,7 @@ func EncodeOffer(reqID, ip, subnetMask, gateway string, lease time.Duration) ([]
 }
 
 func EncodeNak(reqID, reason string) ([]byte, error) {
-	return json.Marshal(Message{
-		Type:      MessageTypeNak,
-		RequestID: reqID,
-		Reason:    reason,
-	})
+	return json.Marshal(Message{Type: MessageTypeNak, RequestID: reqID, Reason: reason})
 }
 
 func DecodeMessage(pkt []byte) (Message, error) {
@@ -70,10 +62,14 @@ func DecodeMessage(pkt []byte) (Message, error) {
 	if err := json.Unmarshal(pkt, &msg); err != nil {
 		return msg, err
 	}
-	if msg.Type == "" {
+	switch msg.Type {
+	case MessageTypeDiscover, MessageTypeOffer, MessageTypeNak:
+		return msg, nil
+	case "":
 		return msg, fmt.Errorf("invalid vdhcp message: type is empty")
+	default:
+		return msg, fmt.Errorf("invalid vdhcp message type: %s", msg.Type)
 	}
-	return msg, nil
 }
 
 func ValidateOffer(msg Message, reqID string) error {
@@ -85,6 +81,9 @@ func ValidateOffer(msg Message, reqID string) error {
 	}
 	if msg.IP == "" || msg.SubnetMask == "" || msg.Gateway == "" {
 		return fmt.Errorf("invalid offer: missing ip/subnet/gateway")
+	}
+	if msg.LeaseSeconds <= 0 {
+		return fmt.Errorf("invalid offer: leaseSeconds must be positive")
 	}
 	return nil
 }

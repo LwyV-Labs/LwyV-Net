@@ -33,23 +33,27 @@ type Manager struct {
 
 	start uint32
 	end   uint32
+	next  uint32
 
 	leaseByID map[string]*Lease
 	ownerByIP map[string]string
-
-	reserved map[string]struct{}
+	reserved  map[string]struct{}
 }
 
 func NewManager(cfg ManagerConfig) (*Manager, error) {
 	start := net.ParseIP(cfg.StartIP).To4()
 	end := net.ParseIP(cfg.EndIP).To4()
 	gw := net.ParseIP(cfg.Gateway).To4()
+	mask := net.ParseIP(cfg.SubnetMask).To4()
 
 	if start == nil || end == nil {
 		return nil, fmt.Errorf("startIP/endIP must be valid IPv4")
 	}
 	if gw == nil {
 		return nil, fmt.Errorf("gateway must be valid IPv4")
+	}
+	if mask == nil {
+		return nil, fmt.Errorf("subnetMask must be valid IPv4 mask")
 	}
 	if cfg.LeaseTTL <= 0 {
 		cfg.LeaseTTL = 24 * time.Hour
@@ -71,14 +75,12 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		cfg:       cfg,
 		start:     startU,
 		end:       endU,
+		next:      startU,
 		leaseByID: make(map[string]*Lease),
 		ownerByIP: make(map[string]string),
 		reserved:  make(map[string]struct{}),
 	}
-
-	// 网关地址不能分配给客户端。
 	m.reserved[gw.String()] = struct{}{}
-
 	return m, nil
 }
 
@@ -91,8 +93,8 @@ func (m *Manager) Acquire(clientID string) (*Lease, error) {
 	defer m.mu.Unlock()
 
 	now := time.Now()
+	m.sweepExpiredLocked(now)
 
-	// 老客户端重连，优先返回原 IP。
 	if lease, ok := m.leaseByID[clientID]; ok {
 		lease.Online = true
 		lease.UpdatedAt = now
@@ -100,33 +102,22 @@ func (m *Manager) Acquire(clientID string) (*Lease, error) {
 		return cloneLease(lease), nil
 	}
 
-	// 新客户端分配 IP。
-	for ipU := m.start; ipU <= m.end; ipU++ {
-		ip := uint32ToIP(ipU).String()
-
-		if _, reserved := m.reserved[ip]; reserved {
-			continue
-		}
-		if _, used := m.ownerByIP[ip]; used {
-			continue
-		}
-
-		lease := &Lease{
-			ClientID:  clientID,
-			IP:        ip,
-			CreatedAt: now,
-			UpdatedAt: now,
-			ExpiresAt: now.Add(m.cfg.LeaseTTL),
-			Online:    true,
-		}
-
-		m.leaseByID[clientID] = lease
-		m.ownerByIP[ip] = clientID
-
-		return cloneLease(lease), nil
+	ip, err := m.allocateIPLocked()
+	if err != nil {
+		return nil, err
 	}
 
-	return nil, fmt.Errorf("ip pool exhausted")
+	lease := &Lease{
+		ClientID:  clientID,
+		IP:        ip,
+		CreatedAt: now,
+		UpdatedAt: now,
+		ExpiresAt: now.Add(m.cfg.LeaseTTL),
+		Online:    true,
+	}
+	m.leaseByID[clientID] = lease
+	m.ownerByIP[ip] = clientID
+	return cloneLease(lease), nil
 }
 
 func (m *Manager) MarkOffline(clientID string) {
@@ -137,12 +128,9 @@ func (m *Manager) MarkOffline(clientID string) {
 	if !ok {
 		return
 	}
-
 	now := time.Now()
 	lease.Online = false
 	lease.UpdatedAt = now
-
-	// 不是立即释放，而是给自动重连留窗口。
 	lease.ExpiresAt = now.Add(m.cfg.OfflineGrace)
 }
 
@@ -155,8 +143,46 @@ func (m *Manager) Release(clientID string) {
 func (m *Manager) SweepExpired() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.sweepExpiredLocked(time.Now())
+}
 
-	now := time.Now()
+func (m *Manager) Snapshot() []Lease {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	leases := make([]Lease, 0, len(m.leaseByID))
+	for _, lease := range m.leaseByID {
+		leases = append(leases, *cloneLease(lease))
+	}
+	return leases
+}
+
+func (m *Manager) allocateIPLocked() (string, error) {
+	poolSize := uint64(m.end) - uint64(m.start) + 1
+	for scanned := uint64(0); scanned < poolSize; scanned++ {
+		ipU := m.next
+		m.advanceNextLocked()
+		ip := uint32ToIP(ipU).String()
+		if _, reserved := m.reserved[ip]; reserved {
+			continue
+		}
+		if _, used := m.ownerByIP[ip]; used {
+			continue
+		}
+		return ip, nil
+	}
+	return "", fmt.Errorf("ip pool exhausted")
+}
+
+func (m *Manager) advanceNextLocked() {
+	if m.next >= m.end {
+		m.next = m.start
+		return
+	}
+	m.next++
+}
+
+func (m *Manager) sweepExpiredLocked(now time.Time) {
 	for clientID, lease := range m.leaseByID {
 		if lease.Online {
 			continue

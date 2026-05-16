@@ -10,17 +10,22 @@ type RunMode string
 const (
 	RunModeClient RunMode = "client"
 	RunModeServer RunMode = "server"
+	RunModeGenKey RunMode = "genkey"
 )
 
-func parseRunMode(args []string) string {
+func parseRunMode(args []string) RunMode {
 	if len(args) < 2 {
-		return string(RunModeClient)
+		return RunModeClient
 	}
 	switch args[1] {
-	case "genkey", string(RunModeServer), string(RunModeClient):
-		return args[1]
+	case string(RunModeGenKey):
+		return RunModeGenKey
+	case string(RunModeServer):
+		return RunModeServer
+	case string(RunModeClient):
+		return RunModeClient
 	default:
-		log.Fatalf("%s is not a valid runType", args[1])
+		log.Fatalf("%s is not a valid runType, use client/server/genkey", args[1])
 		return ""
 	}
 }

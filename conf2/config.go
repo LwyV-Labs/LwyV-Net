@@ -1,9 +1,6 @@
 package conf2
 
 import (
-	"crypto/ecdh"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/LwyV-Labs/LwyV-Net/secure"
+	"github.com/LwyV-Labs/LwyV-Net/tcpx"
 )
 
 const (
@@ -20,38 +17,75 @@ const (
 )
 
 func LoadClientConfig() ClientConfig {
+	conf, err := LoadClientConfigFrom(clientConfigPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return conf
+}
+
+func LoadServerConfig() ServerConfig {
+	conf, err := LoadServerConfigFrom(serverConfigPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return conf
+}
+
+func LoadClientConfigFrom(path string) (ClientConfig, error) {
 	var conf ClientConfig
-	mustLoadJSON(clientConfigPath, &conf)
+	if err := loadJSON(path, &conf); err != nil {
+		return conf, err
+	}
+	applyClientDefaults(&conf)
 
 	if strings.TrimSpace(conf.Server) == "" {
-		log.Fatalf("client.server 不能为空")
+		return conf, fmt.Errorf("client.server 不能为空")
 	}
 	if strings.TrimSpace(conf.ServerPublicKey) == "" {
-		log.Fatalf("client.serverPublicKey 不能为空")
+		return conf, fmt.Errorf("client.serverPublicKey 不能为空")
 	}
+	if err := ensurePrivateKey(path, &conf.PrivateKey); err != nil {
+		return conf, err
+	}
+	if _, err := tcpx.ParsePrivateKeyAny(conf.PrivateKey); err != nil {
+		return conf, fmt.Errorf("解析 client.privateKey 失败: %w", err)
+	}
+	if _, err := tcpx.ParsePublicKeyAny(conf.ServerPublicKey); err != nil {
+		return conf, fmt.Errorf("解析 client.serverPublicKey 失败: %w", err)
+	}
+	return conf, nil
+}
+
+func LoadServerConfigFrom(path string) (ServerConfig, error) {
+	var conf ServerConfig
+	if err := loadJSON(path, &conf); err != nil {
+		return conf, err
+	}
+	applyServerDefaults(&conf)
+
+	if err := validateVDHCP(conf.VDHCP); err != nil {
+		return conf, err
+	}
+	if err := ensurePrivateKey(path, &conf.PrivateKey); err != nil {
+		return conf, err
+	}
+	if _, err := tcpx.ParsePrivateKeyAny(conf.PrivateKey); err != nil {
+		return conf, fmt.Errorf("解析 server.privateKey 失败: %w", err)
+	}
+	return conf, nil
+}
+
+func applyClientDefaults(conf *ClientConfig) {
 	if conf.IfName == "" {
 		conf.IfName = "LwyV-NetAdapter"
 	}
 	if conf.MTU <= 0 {
 		conf.MTU = 1300
 	}
-
-	ensurePrivateKey(clientConfigPath, &conf.PrivateKey)
-
-	if _, err := secure.ParsePrivateKey(conf.PrivateKey); err != nil {
-		log.Fatalf("解析 client.privateKey 失败: %v", err)
-	}
-	if _, err := secure.ParsePublicKey(conf.ServerPublicKey); err != nil {
-		log.Fatalf("解析 client.serverPublicKey 失败: %v", err)
-	}
-
-	return conf
 }
 
-func LoadServerConfig() ServerConfig {
-	var conf ServerConfig
-	mustLoadJSON(serverConfigPath, &conf)
-
+func applyServerDefaults(conf *ServerConfig) {
 	if conf.Port <= 0 {
 		conf.Port = 9999
 	}
@@ -61,7 +95,6 @@ func LoadServerConfig() ServerConfig {
 	if conf.MTU <= 0 {
 		conf.MTU = 1300
 	}
-
 	if conf.VDHCP.StartIP == "" {
 		conf.VDHCP.StartIP = "172.19.0.10"
 	}
@@ -74,50 +107,55 @@ func LoadServerConfig() ServerConfig {
 	if conf.VDHCP.Gateway == "" {
 		conf.VDHCP.Gateway = "172.19.0.254"
 	}
-
-	if net.ParseIP(conf.VDHCP.Gateway) == nil {
-		log.Fatalf("非法网关地址: %s", conf.VDHCP.Gateway)
-	}
-	if _, err := MaskToPrefix(conf.VDHCP.SubnetMask); err != nil {
-		log.Fatalf("非法子网掩码: %s, 错误: %v", conf.VDHCP.SubnetMask, err)
-	}
-
-	ensurePrivateKey(serverConfigPath, &conf.PrivateKey)
-
-	if _, err := secure.ParsePrivateKey(conf.PrivateKey); err != nil {
-		log.Fatalf("解析 server.privateKey 失败: %v", err)
-	}
-
-	return conf
 }
 
-func mustLoadJSON(path string, v any) {
+func validateVDHCP(conf VDHCPConfig) error {
+	start := net.ParseIP(conf.StartIP).To4()
+	end := net.ParseIP(conf.EndIP).To4()
+	gateway := net.ParseIP(conf.Gateway).To4()
+	if start == nil {
+		return fmt.Errorf("非法 vdhcp.startIP: %s", conf.StartIP)
+	}
+	if end == nil {
+		return fmt.Errorf("非法 vdhcp.endIP: %s", conf.EndIP)
+	}
+	if gateway == nil {
+		return fmt.Errorf("非法 vdhcp.gateway: %s", conf.Gateway)
+	}
+	if ipToUint32(start) > ipToUint32(end) {
+		return fmt.Errorf("vdhcp.startIP 必须小于或等于 vdhcp.endIP")
+	}
+	if _, err := MaskToPrefix(conf.SubnetMask); err != nil {
+		return fmt.Errorf("非法 vdhcp.subnetMask: %s: %w", conf.SubnetMask, err)
+	}
+	return nil
+}
+
+func loadJSON(path string, v any) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		log.Fatalf("加载配置文件失败: %v", err)
+		return fmt.Errorf("加载配置文件失败 %s: %w", path, err)
 	}
 	if err := json.Unmarshal(data, v); err != nil {
-		log.Fatalf("解析配置文件失败: %v", err)
+		return fmt.Errorf("解析配置文件失败 %s: %w", path, err)
 	}
+	return nil
 }
 
-func ensurePrivateKey(path string, key *string) {
+func ensurePrivateKey(path string, key *string) error {
 	if strings.TrimSpace(*key) != "" {
-		return
+		return nil
 	}
-
-	privateKey, publicKey, err := generateNoiseKeyPair()
+	privateKey, publicKey, err := tcpx.GenerateStaticKeyBase64()
 	if err != nil {
-		log.Fatalf("自动生成 privateKey 失败: %v", err)
+		return fmt.Errorf("自动生成 privateKey 失败: %w", err)
 	}
-
 	*key = privateKey
-
 	if err := patchPrivateKey(path, privateKey); err != nil {
-		log.Fatalf("写入 privateKey 失败: %v", err)
+		return fmt.Errorf("写入 privateKey 失败: %w", err)
 	}
-
 	log.Printf("privateKey 为空，已自动生成并写回配置文件；publicKey=%s", publicKey)
+	return nil
 }
 
 func patchPrivateKey(path string, privateKey string) error {
@@ -125,36 +163,20 @@ func patchPrivateKey(path string, privateKey string) error {
 	if err != nil {
 		return fmt.Errorf("读取配置文件失败: %w", err)
 	}
-
 	var m map[string]any
 	if err := json.Unmarshal(data, &m); err != nil {
 		return fmt.Errorf("解析配置文件失败: %w", err)
 	}
-
 	m["privateKey"] = privateKey
-
 	out, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return fmt.Errorf("编码配置文件失败: %w", err)
 	}
-
 	perm := os.FileMode(0644)
 	if info, err := os.Stat(path); err == nil {
 		perm = info.Mode().Perm()
 	}
-
 	return os.WriteFile(path, out, perm)
-}
-
-func generateNoiseKeyPair() (privateKey string, publicKey string, err error) {
-	private, err := ecdh.X25519().GenerateKey(rand.Reader)
-	if err != nil {
-		return "", "", err
-	}
-
-	return base64.StdEncoding.EncodeToString(private.Bytes()),
-		base64.StdEncoding.EncodeToString(private.PublicKey().Bytes()),
-		nil
 }
 
 func MaskToPrefix(mask string) (int, error) {
@@ -163,8 +185,13 @@ func MaskToPrefix(mask string) (int, error) {
 		return 0, fmt.Errorf("非法子网掩码: %s", mask)
 	}
 	ones, bits := net.IPMask(ip).Size()
-	if bits != 32 {
+	if bits != 32 || ones < 0 {
 		return 0, fmt.Errorf("非法子网掩码: %s", mask)
 	}
 	return ones, nil
+}
+
+func ipToUint32(ip net.IP) uint32 {
+	v := ip.To4()
+	return uint32(v[0])<<24 | uint32(v[1])<<16 | uint32(v[2])<<8 | uint32(v[3])
 }
