@@ -66,6 +66,8 @@ type ClientConfig struct {
 	AutoReconnect      bool
 	ReconnectBaseDelay time.Duration
 	ReconnectMaxDelay  time.Duration
+
+	OnReconnect func()
 }
 
 func (c *ClientConfig) normalize() {

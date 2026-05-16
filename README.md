@@ -30,6 +30,15 @@ LwyV-Net 的目标不是“复杂的大而全平台”，而是提供一个**可
 - **可扩展架构**：已具备网关/NAT 方向能力，可继续演进策略与控制面。
 
 ---
+### 
+```bash
+go build -o ./build2/lwyvnet2.exe main2.go main_common.go
+```
+### 
+```bash
+$env:CGO_ENABLED=0; $env:GOOS="linux";go build -o ./build2/lwyvnet2-linux-amd64 main2.go main_common.go
+```
+
 
 ## 当前能力（Now）
 

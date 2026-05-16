@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/LwyV-Labs/LwyV-Net/config"
-	"github.com/LwyV-Labs/LwyV-Net/flowagg"
 	"github.com/LwyV-Labs/LwyV-Net/secure"
 	"github.com/LwyV-Labs/LwyV-Net/tunSetup"
 	"github.com/LwyV-Labs/LwyV-Net/vdhcp"
@@ -28,8 +27,6 @@ type Client struct {
 	stop atomic.Bool
 	conn net.Conn
 	tun  *tunSetup.TUNTunnel
-
-	detectCh chan flowagg.FeatureJSON
 }
 
 var cconf config.ClientConfig
@@ -116,48 +113,13 @@ func (c *Client) runSession(conn net.Conn, serverIP string) {
 	log.Printf("✅ 虚拟地址配置成功")
 	done := make(chan struct{})
 
-	// =====================================流量检测=====================================
-
-	agg := flowagg.NewAggregator(
-		10*time.Second, // 每个 flow 最多聚合 1 秒
-		10*time.Second, // 3 秒没新包就 flush
-		300,            // 或者满 30 个包就 flush
-	)
-
-	c.detectCh = make(chan flowagg.FeatureJSON, 1024)
-
-	go c.detectorWorker(c.detectCh)
-
-	go func() {
-		ticker := time.NewTicker(1 * time.Second)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-done:
-				return
-			case now := <-ticker.C:
-				features := agg.FlushIdle(now)
-				for _, f := range features {
-					select {
-					case c.detectCh <- f:
-					default:
-						log.Printf("检测队列已满，丢弃 flow: %s", f.FlowID)
-					}
-				}
-			}
-		}
-	}()
-
-	// =====================================流量检测=====================================
-
 	go func() {
 		defer close(done)
 		// 下行：网络 -> TUN
-		c.connToTun(conn, sessionMgr, agg)
+		c.connToTun(conn, sessionMgr)
 	}()
 	// 上行：TUN/心跳 -> 网络
-	c.clientSendLoop(conn, done, sessionMgr, agg)
+	c.clientSendLoop(conn, done, sessionMgr)
 }
 
 func (c *Client) initAddress(conn net.Conn, sessionMgr *secure.SessionManager, serverIP string) error {
@@ -210,7 +172,7 @@ func (c *Client) requestVDHCP(conn net.Conn, sessionMgr *secure.SessionManager) 
 	return msg.IP, msg.SubnetMask, msg.Gateway, nil
 }
 
-func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr *secure.SessionManager, agg *flowagg.Aggregator) {
+func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr *secure.SessionManager) {
 	heartbeatTicker := time.NewTicker(RandomInterval(heartbeatInterval, heartbeatFluctuate))
 	defer heartbeatTicker.Stop()
 	for {
@@ -227,20 +189,6 @@ func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr 
 				return
 			}
 
-			// =====================上行流量检测聚合：TUN -> 服务端===================
-			if agg != nil {
-				features, err := agg.AddIPv4Packet(pkt, time.Now())
-				if err == nil {
-					for _, f := range features {
-						select {
-						case c.detectCh <- f:
-						default:
-							log.Printf("检测队列已满，丢弃 flow: %s", f.FlowID)
-						}
-					}
-				}
-			}
-			//====================================================================
 			// 所有业务包都先走会话加密，再发外层 Secure 帧。
 			if err := writeSecureFrame(conn, sessionMgr, PacketTypeIP, pkt); err != nil {
 				return
@@ -250,7 +198,7 @@ func (c *Client) clientSendLoop(conn net.Conn, done <-chan struct{}, sessionMgr 
 	}
 }
 
-func (c *Client) connToTun(conn net.Conn, sessionMgr *secure.SessionManager, agg *flowagg.Aggregator) {
+func (c *Client) connToTun(conn net.Conn, sessionMgr *secure.SessionManager) {
 	for {
 		frame, err := readFrame(conn)
 		if err != nil {
@@ -269,21 +217,6 @@ func (c *Client) connToTun(conn net.Conn, sessionMgr *secure.SessionManager, agg
 			log.Printf("解密业务数据失败: err=%v innerType=%d", err, innerType)
 			continue
 		}
-		//=============================================================
-		// 下行流量检测聚合：服务端 -> TUN
-		if agg != nil {
-			features, err := agg.AddIPv4Packet(plain, time.Now())
-			if err == nil {
-				for _, f := range features {
-					select {
-					case c.detectCh <- f:
-					default:
-						log.Printf("检测队列已满，丢弃 flow: %s", f.FlowID)
-					}
-				}
-			}
-		}
-		//==============================================================
 
 		c.stats.AddDownload(len(plain))
 		if err = c.tun.Write(plain); err != nil {

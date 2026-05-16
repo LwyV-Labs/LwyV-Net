@@ -14,6 +14,8 @@ type Client struct {
 	mu     sync.RWMutex
 	conn   *Conn
 	closed bool
+
+	onReconnect func()
 }
 
 func NewClient(cfg ClientConfig) (*Client, error) {
@@ -33,7 +35,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if _, err := parsePublicKeyB64(cfg.ServerPublicKeyB64); err != nil {
 		return nil, err
 	}
-	return &Client{cfg: cfg}, nil
+	return &Client{cfg: cfg, onReconnect: cfg.OnReconnect}, nil
 }
 
 func (c *Client) Connect(ctx context.Context) error {
@@ -123,6 +125,11 @@ func (c *Client) reconnectLoop(ctx context.Context) error {
 			c.mu.Unlock()
 			if old != nil && old != conn {
 				_ = old.Close()
+			}
+
+			// 调用重连成功回调（在锁外调用，避免死锁）
+			if c.onReconnect != nil {
+				c.onReconnect()
 			}
 			return nil
 		}

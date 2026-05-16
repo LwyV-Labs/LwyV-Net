@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/LwyV-Labs/LwyV-Net/conf2"
@@ -14,10 +15,11 @@ import (
 )
 
 type Client struct {
-	stats vlan.TrafficCounter
-	tun   *tunSetup.TUNTunnel
-	conn  *securetcp.Client
-	conf  conf2.ClientConfig
+	stats       vlan.TrafficCounter
+	tun         *tunSetup.TUNTunnel
+	conn        *securetcp.Client
+	conf        conf2.ClientConfig
+	reconnectMu sync.Mutex // 防止多个重连回调同时执行
 }
 
 func NewClient(conf conf2.ClientConfig) *Client {
@@ -48,14 +50,17 @@ func (c *Client) Start() {
 		Address:             c.conf.Server,
 		ClientPrivateKeyB64: c.conf.PrivateKey,
 		ServerPublicKeyB64:  c.conf.ServerPublicKey,
-		AutoReconnect:       false, // 下面解释
+		AutoReconnect:       true,
 		CommonConfig: securetcp.CommonConfig{
-			ReadTimeout:     60 * time.Second,
-			WriteTimeout:    15 * time.Second,
-			HeartbeatBase:   10 * time.Second,
-			HeartbeatJitter: 5 * time.Second,
+			ReadTimeout:     10 * time.Second,
+			WriteTimeout:    8 * time.Second,
+			HeartbeatBase:   4 * time.Second,
+			HeartbeatJitter: 1 * time.Second,
 			RekeyInterval:   45 * time.Second,
-			OldKeyGrace:     30 * time.Second,
+			OldKeyGrace:     20 * time.Second,
+		},
+		OnReconnect: func() {
+			c.reconnectInit()
 		},
 	})
 
@@ -101,6 +106,19 @@ func (c *Client) Stop() {
 		c.tun = nil
 	}
 	log.Printf("客户端已停止")
+}
+
+func (c *Client) reconnectInit() {
+	c.reconnectMu.Lock()
+	defer c.reconnectMu.Unlock()
+
+	log.Println("✅ TCP 重连成功，重新申请虚拟地址...")
+	if err := c.initAddress(); err != nil {
+		log.Printf("重连后申请虚拟地址失败: %v", err)
+		// 这里可以根据需要关闭连接或继续尝试，但 securetcp 会自动保持重连
+		return
+	}
+	log.Println("✅ 虚拟地址重新配置成功")
 }
 
 func (c *Client) initAddress() error {
@@ -168,13 +186,13 @@ func (c *Client) connToTun() {
 	for {
 		raw, err := c.conn.Read(context.Background())
 		if err != nil {
-			return
+			continue
 		}
 
 		typ, payload, err := Unpack(raw)
 		if err != nil {
 			log.Printf("解析应用层数据失败: %v", err)
-			return
+			continue
 		}
 
 		switch typ {
@@ -182,7 +200,7 @@ func (c *Client) connToTun() {
 			c.stats.AddDownload(len(payload))
 			if err := c.tun.Write(payload); err != nil {
 				log.Printf("写入TUN失败: %v", err)
-				return
+				continue
 			}
 
 		case TypeVDHCP:
@@ -200,13 +218,13 @@ func (c *Client) clientSendLoop() {
 	for {
 		pkt, ok := <-c.tun.ReadChan()
 		if !ok {
-			return
+			continue
 		}
 
 		payload := Pack(TypeIP, pkt)
 
 		if err := c.conn.Write(context.Background(), payload); err != nil {
-			return
+			continue
 		}
 
 		c.stats.AddUpload(len(pkt))
