@@ -2,14 +2,14 @@ package vlan
 
 // VDHCPAssignedInfo is emitted after a vDHCP address has been assigned.
 type VDHCPAssignedInfo struct {
-	ClientID     string
-	RemoteAddr   string
-	IP           string
-	SubnetMask   string
-	Gateway      string
-	DNS          []string
-	MTU          int
-	LeaseSeconds int64
+	ClientID     string   `json:"clientID"`
+	RemoteAddr   string   `json:"remoteAddr"`
+	IP           string   `json:"ip"`
+	SubnetMask   string   `json:"subnetMask"`
+	Gateway      string   `json:"gateway"`
+	DNS          []string `json:"dns"`
+	MTU          int      `json:"mtu"`
+	LeaseSeconds int64    `json:"leaseSeconds"`
 }
 
 // VDHCPAssignedCallback is called after vDHCP assignment succeeds.

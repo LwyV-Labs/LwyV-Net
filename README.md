@@ -1,42 +1,155 @@
 # LwyV-Net
 
-> 轻量、可控、面向公网环境的私有网络方案。  
-> 通过 TUN 虚拟网卡 + 加密隧道 + 中继转发，把分散设备快速拉入同一个“可用内网”。
+LwyV-Net 是一个轻量的私有网络 / 虚拟局域网项目。它通过 TUN 虚拟网卡、加密 TCP 隧道、虚拟 DHCP 和服务端网关转发，把分散在不同网络环境里的设备接入到同一个三层网络中。
 
-[![Go Version](https://img.shields.io/badge/Go-1.20%2B-00ADD8?logo=go)](https://go.dev/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+当前项目重点不是做成复杂平台，而是提供一个清晰、可控、方便二次开发的组网核心。它可以作为远程设备接入、移动端 VPN、边缘节点互联、Web 管理平台的底层网络能力。
 
----
+## 当前能力
 
-## 项目简介
+- TUN 虚拟网卡收发三层 IP 包。
+- TCP 加密隧道，支持客户端到服务端的安全连接。
+- X25519 静态密钥认证与会话加密。
+- vDHCP 自动下发虚拟 IP、网关、MTU、DNS。
+- 客户端可通过服务端网关代理访问外部网络。
+- 服务端可统计在线客户端、虚拟 IP、流量速率。
+- 服务端提供 management HTTP API，方便后续接 Web 监控平台。
+- Android 侧提供 gomobile 绑定入口，可打包为 AAR。
 
-LwyV-Net 的目标不是“复杂的大而全平台”，而是提供一个**可以快速落地、便于二次开发**的组网基础能力：
+## 项目结构
 
-- 在公网和复杂网络环境下，实现异地设备三层互通。
-- 通过加密握手与会话保护公网传输安全。
-- 以较少配置完成服务端/客户端部署与接入。
-- 提供可扩展的中继与网关能力，支持后续工程化演进。
+```text
+.
+├── main.go                 # 程序入口：client / server / genkey
+├── config/                 # client.json / server.json 配置加载与校验
+├── tcpx/                   # TCP 加密连接、握手、会话、心跳
+├── vlan/                   # 服务端/客户端组网核心、vDHCP 接入、management API
+├── vdhcp/                  # 虚拟 DHCP 地址池、租约、报文
+├── tunSetup/               # TUN 网卡、路由、DNS、NAT 配置
+├── mobile/                 # Android gomobile 绑定封装
+└── build/                  # 示例配置与构建输出目录
+```
 
-适用场景：IoT 设备维护、边缘节点管理、机器人协同、跨地域开发测试网络。
+## 快速开始
 
----
+程序会按启动模式读取当前目录下的配置文件：
 
-## 核心优势
+- 服务端读取 `server.json`
+- 客户端读取 `client.json`
 
-- **轻量可控**：核心链路清晰，依赖少，方便定位与调试。
-- **安全传输**：Noise IK 风格握手与会话加密（X25519 + HKDF-SHA256 + ChaCha20-Poly1305）。
-- **组网门槛低**：内置虚拟 DHCP，减少手动地址管理成本。
-- **韧性连接**：支持断线重连与会话轮换，提升复杂网络下可用性。
-- **可扩展架构**：已具备网关/NAT 方向能力，可继续演进策略与控制面。
+可以先从示例配置复制：
 
----
+```bash
+copy build\server.json server.json
+copy build\client.json client.json
+```
+
+生成密钥：
+
+```bash
+go run . genkey
+```
+
+把服务端生成的 `publicKey` 填到客户端配置 `serverPublicKey`。`privateKey` 如果留空，程序启动时会自动生成并写回配置文件。
+
+启动服务端：
+
+```bash
+go run . server
+```
+
+启动客户端：
+
+```bash
+go run . client
+```
+
+不传参数时默认以客户端模式启动。
+
+## 配置说明
+
+服务端核心配置在 `server.json`：
+
+```json
+{
+  "privateKey": "",
+  "port": 443,
+  "ifName": "LwyV-Gateway",
+  "mtu": 1300,
+  "proxy": true,
+  "vdhcp": {
+    "startIP": "172.30.0.10",
+    "endIP": "172.30.0.200",
+    "subnetMask": "255.255.255.0",
+    "gateway": "172.30.0.254",
+    "dns": ["8.8.8.8", "1.1.1.1"]
+  },
+  "management": {
+    "enabled": true,
+    "addr": "127.0.0.1:18080",
+    "token": ""
+  }
+}
+```
+
+客户端核心配置在 `client.json`：
+
+```json
+{
+  "ifName": "LwyV-NetAdapter",
+  "privateKey": "",
+  "proxy": true,
+  "server": "server-ip:443",
+  "serverPublicKey": "server-public-key"
+}
+```
+
+## Management HTTP API
+
+服务端可以开启 management HTTP API，用于 Web 监控平台或调试工具读取运行状态。
+
+默认建议只监听本机：
+
+```json
+"management": {
+  "enabled": true,
+  "addr": "127.0.0.1:18080",
+  "token": ""
+}
+```
+
+当前接口：
+
+```text
+GET /api/status
+GET /api/peers
+GET /api/traffic
+GET /api/vdhcp/leases
+GET /api/events
+```
+
+如果配置了 `token`，请求需要带认证头：
+
+```bash
+curl -H "Authorization: Bearer your-token" http://127.0.0.1:18080/api/status
+```
+
+也可以使用：
+
+```bash
+curl -H "X-Management-Token: your-token" http://127.0.0.1:18080/api/status
+```
+
+如果需要远程调试，推荐使用 VSCode Remote SSH 的端口转发或 SSH 本地转发，不建议直接把 management API 暴露到公网。
+
+## 打包
+
 ### win打包
 ```bash
 go build -o ./build/lwyvnet.exe main.go
 ```
 ### linux打包
 ```bash
-$env:CGO_ENABLED=0; $env:GOOS="linux";go build -o ./build/lwyvnet-linux-amd64 main.go                 
+$env:CGO_ENABLED=0; $env:GOOS="linux";go build -o ./build/lwyvnet-linux-amd64 main.go
 ```
 
 ### android打包aar
@@ -50,101 +163,13 @@ New-Item -ItemType Directory -Force build | Out-Null;
 gomobile bind -v -target android -androidapi 23 -o build/lwyvnet.aar -javapkg "com.lwyv.net" ./mobile
 ```
 
-## 当前能力（Now）
+## 后续方向
 
-- ✅ TUN 虚拟网卡接入（三层 IP 收发）
-- ✅ TCP 隧道通信（客户端 ↔ 服务端）
-- ✅ Noise IK 风格握手与会话加密
-- ✅ 虚拟 DHCP 自动分配地址
-- ✅ 断线重连与会话轮换
-- ✅ 可选代理模式（客户端默认流量可经隧道转发，服务端可做网关/NAT）
-
-> 当前版本可用于基础跨地域设备互联、远程访问与内网化接入。
-
----
-
-## 发展方向（Roadmap）
-
-### 连接与可靠性
-- 🔜 链路质量探测与智能切换
-- 🔜 多中继容灾与自动降级
-- 🔜 更完善的 TCP 链路优化与重传控制策略
-
-### 平台与工程化
-- 🔜 多平台完善（Windows / Linux / macOS / Android）
-- 🔜 中继节点池与调度能力
-- 🔜 更完善的部署与运维工具链
-
-### 管理与可观测
-- 🔜 Web 管理后台（设备、节点、密钥、权限）
-- 🔜 链路健康与流量监控
-- 🔜 可审计的访问控制策略
-
----
-
-## 打包
-```bash
-go build -trimpath -buildvcs=false -ldflags="-s -w" -o build/LwyV-Net.exe .
-
-$env:CGO_ENABLED=0; $env:GOOS="linux"; $env:GOARCH="amd64";go build -trimpath -buildvcs=false -ldflags="-s -w" -o build/LwyV-Net .
-
-```
-
-## 快速运行
-
-程序按启动模式读取当前目录下的配置：服务端读取 `server.json`，客户端读取 `client.json`。
-
-### 1) 准备配置
-
-```bash
-cp build/server.json server.json
-cp build/client.json client.json
-```
-
-### 2) 编译
-
-```bash
-go build -o build/lwyv-net .
-```
-
-### 3) 初始化密钥（建议两端都执行）
-
-```bash
-./build/lwyv-net genkey
-```
-
-把输出的 `publicKey` 互相填入对端对应配置文件（`server.json` 或 `client.json`）的 `common.peerPublicKeys`。
-
-### 4) 启动服务端
-
-```bash
-sudo ./build/lwyv-net server
-```
-
-### 5) 启动客户端
-
-```bash
-sudo ./build/lwyv-net client 1
-
-```
-
-> 不传参数默认按客户端启动并连接第1个服务端，即 `./build/lwyv-net` 等同于 `./build/lwyv-net client 1`。
-
----
-
-## 项目结构
-
-```text
-.
-├── main.go        # 入口：genkey / server / client
-├── vlan/          # 核心组网逻辑
-├── secure/        # 握手与加密会话
-├── vdhcp/         # 虚拟 DHCP
-├── setup/         # TUN、路由与系统配置
-└── build/         # 构建产物与配置示例
-```
-
----
+- Web 管理平台：节点列表、在线客户端、流量图表、事件日志。
+- 控制 API：踢客户端、释放租约、拉黑设备、热重载部分配置。
+- 多节点管理：中心控制面统一监控多个 LwyV-Net 节点。
+- 权限体系：只读 token、管理 token、操作审计。
+- 更完整的 Windows / Android 客户端体验。
 
 ## License
 

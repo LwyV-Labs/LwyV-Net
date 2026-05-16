@@ -9,12 +9,12 @@ import (
 )
 
 type Lease struct {
-	ClientID  string
-	IP        string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	ExpiresAt time.Time
-	Online    bool
+	ClientID  string    `json:"clientID"`
+	IP        string    `json:"ip"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
+	Online    bool      `json:"online"`
 }
 
 type ManagerConfig struct {
