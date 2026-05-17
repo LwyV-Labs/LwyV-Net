@@ -110,10 +110,12 @@ go run . client
 默认建议只监听本机：
 
 ```json
-"management": {
-  "enabled": true,
-  "addr": "127.0.0.1:18080",
-  "token": ""
+{
+  "management": {
+    "enabled": true,
+    "addr": "127.0.0.1:18080",
+    "token": ""
+  }
 }
 ```
 
